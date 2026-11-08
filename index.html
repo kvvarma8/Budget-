@@ -1,0 +1,2524 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Family Budget</title>
+<meta name="referrer" content="no-referrer">
+<!--
+  Family Budget (with automatic sync): a private, local-first budget tracker.
+  Data lives in this browser's localStorage under "family-budget:v2" (older "family-budget:v1" data is read once and kept).
+  Automatic sync is peer-to-peer over WebRTC. Public Nostr relays are used only so devices can find each other; they see a
+  hashed room name and connection offers encrypted with the room password, never budget data. Budget data goes directly
+  between devices and is additionally encrypted with AES-256-GCM using a key derived from the Room ID and password.
+  Bundled inline: Trystero 0.26.0 (MIT, https://github.com/dmotz/trystero) and its dependencies.
+  Loaded from CDN on first open, then cached by the browser: React, ReactDOM, Tailwind (browser build), Lucide icons.
+-->
+<style>
+  /* Layout: single column on phones, summary row + two-column work area (budgets | add entry) + full-width log on desktop. */
+  :root {
+    --bg: #f4f5f1;
+    --surface: #ffffff;
+    --surface-2: #eceee8;
+    --line: #dcdfd6;
+    --fg: #1d221f;
+    --muted: #626b65;
+    --accent: #2d4f9e;
+    --accent-fg: #ffffff;
+    --accent-soft: #e3e9f7;
+    --income: #1c7a50;
+    --income-soft: #dff1e7;
+    --expense: #b3412b;
+    --expense-soft: #f8e4de;
+    --warn: #9a6400;
+    --warn-soft: #f8ecd2;
+    --danger: #c42b3a;
+    --danger-soft: #f9dfe2;
+    --shadow: 0 1px 2px rgba(20, 30, 25, .06), 0 4px 16px rgba(20, 30, 25, .05);
+    --font-ui: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --font-num: ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #121513; --surface: #1a1e1b; --surface-2: #232824; --line: #313732;
+      --fg: #e7ebe6; --muted: #9aa49c; --accent: #8fa8ff; --accent-fg: #0f1530; --accent-soft: #232c4a;
+      --income: #5fd19a; --income-soft: #183326; --expense: #f08a72; --expense-soft: #3a211b;
+      --warn: #f0bd5a; --warn-soft: #3a2f17; --danger: #ff7b86; --danger-soft: #3d1c21;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 4px 16px rgba(0,0,0,.25);
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #121513; --surface: #1a1e1b; --surface-2: #232824; --line: #313732;
+    --fg: #e7ebe6; --muted: #9aa49c; --accent: #8fa8ff; --accent-fg: #0f1530; --accent-soft: #232c4a;
+    --income: #5fd19a; --income-soft: #183326; --expense: #f08a72; --expense-soft: #3a211b;
+    --warn: #f0bd5a; --warn-soft: #3a2f17; --danger: #ff7b86; --danger-soft: #3d1c21;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 4px 16px rgba(0,0,0,.25);
+    color-scheme: dark;
+  }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--font-ui); font-size: 15px; line-height: 1.45; }
+  .num { font-family: var(--font-num); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+  .label { font-size: 11.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  h1, h2, h3 { text-wrap: balance; }
+  .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; }
+  .field { width: 100%; background: var(--surface); color: var(--fg); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font: inherit; min-width: 0; }
+  .field:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; border-radius: 10px; padding: 9px 14px; font-weight: 600; font-size: 14px; border: 1px solid var(--line); background: var(--surface); color: var(--fg); cursor: pointer; white-space: nowrap; }
+  .btn:hover { background: var(--surface-2); }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .btn-primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+  .btn-primary:hover { background: var(--accent); filter: brightness(1.08); }
+  .btn-danger { background: var(--danger); color: #fff; border-color: var(--danger); }
+  .btn-danger:hover { background: var(--danger); filter: brightness(1.08); }
+  .btn-ghost { border-color: transparent; background: transparent; }
+  .icon-btn { display: inline-grid; place-items: center; width: 34px; height: 34px; border-radius: 9px; color: var(--muted); background: transparent; border: 0; cursor: pointer; }
+  .icon-btn:hover { background: var(--surface-2); color: var(--fg); }
+  button:focus-visible, a:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; background: var(--surface-2); border-radius: 10px; padding: 3px; gap: 3px; }
+  .seg button { border: 0; background: transparent; color: var(--muted); padding: 7px 10px; border-radius: 8px; font: inherit; font-weight: 600; font-size: 14px; cursor: pointer; display: inline-flex; gap: 6px; align-items: center; justify-content: center; }
+  .seg button[aria-pressed="true"] { background: var(--surface); color: var(--fg); box-shadow: var(--shadow); }
+  .bar { height: 8px; border-radius: 99px; background: var(--surface-2); overflow: hidden; }
+  .bar > span { display: block; height: 100%; border-radius: 99px; transition: width .4s ease; }
+  .pill { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 99px; white-space: nowrap; }
+  .scrim { position: fixed; inset: 0; background: rgba(10, 14, 12, .45); display: grid; place-items: end center; z-index: 50; padding: 0; }
+  .sheet { background: var(--surface); color: var(--fg); width: 100%; max-width: 560px; max-height: 92vh; overflow: auto; border-radius: 18px 18px 0 0; padding: 20px 16px calc(20px + env(safe-area-inset-bottom, 0px)); box-shadow: var(--shadow); }
+  @media (min-width: 640px) { .scrim { place-items: center; padding: 24px; } .sheet { border-radius: 18px; padding: 24px; } }
+  .toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(16px + env(safe-area-inset-bottom, 0px)); z-index: 60; background: var(--fg); color: var(--bg); border-radius: 12px; padding: 10px 14px; display: flex; gap: 12px; align-items: center; box-shadow: var(--shadow); max-width: calc(100% - 32px); font-size: 14px; }
+  .toast button { color: inherit; background: transparent; border: 0; font: inherit; font-weight: 700; text-decoration: underline; cursor: pointer; }
+  .tbl { width: 100%; border-collapse: collapse; }
+  .tbl th { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  .tbl th.text-right { text-align: right; }
+  .tbl td { padding: 11px 12px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  .tbl tr:last-child td { border-bottom: 0; }
+  .tbl tbody tr:hover { background: var(--surface-2); }
+  .swatch { width: 26px; height: 26px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; }
+  .swatch[aria-pressed="true"] { border-color: var(--fg); box-shadow: inset 0 0 0 2px var(--surface); }
+  #boot { padding: 48px 16px; text-align: center; color: var(--muted); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+  .dot-lg { width: 12px; height: 12px; }
+  .dot-live { animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .35; } }
+  .sync-pill { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 600; letter-spacing: 0; padding: 4px 10px; border-radius: 99px; border: 1px solid var(--line); background: var(--surface); color: var(--fg); cursor: pointer; vertical-align: middle; }
+  .sync-pill:hover { background: var(--surface-2); }
+  .tag-synced { display: inline-grid; place-items: center; width: 18px; height: 18px; margin-left: 6px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); vertical-align: -3px; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+<script>/* Trystero 0.26.0 nostr bundle, MIT */
+var Trystero=(()=>{var gn=Object.defineProperty;var yo=Object.getOwnPropertyDescriptor;var go=Object.getOwnPropertyNames;var po=Object.prototype.hasOwnProperty;var ho=(e,n,t)=>n in e?gn(e,n,{enumerable:!0,configurable:!0,writable:!0,value:t}):e[n]=t;var wo=(e,n)=>{for(var t in n)gn(e,t,{get:n[t],enumerable:!0})},vo=(e,n,t,o)=>{if(n&&typeof n=="object"||typeof n=="function")for(let s of go(n))!po.call(e,s)&&s!==t&&gn(e,s,{get:()=>n[s],enumerable:!(o=yo(n,s))||o.enumerable});return e};var ko=e=>vo(gn({},"__esModule",{value:!0}),e);var ae=(e,n,t)=>ho(e,typeof n!="symbol"?n+"":n,t);var Ks={};wo(Ks,{defaultRelayUrls:()=>Pt,getRelaySockets:()=>uo,joinRoom:()=>fo,selfId:()=>te});var zn=Object.freeze,He=0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2fn,Ye=0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n,xt=0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798n,Ut=0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8n,bo=zn({p:He,n:Ye,h:1n,a:0n,b:7n,Gx:xt,Gy:Ut}),be=32,Rt=e=>e instanceof Uint8Array||ArrayBuffer.isView(e)&&e.constructor.name==="Uint8Array"&&e.BYTES_PER_ELEMENT===1,ge=(e,n,t="")=>{if(Rt(e)&&(n===void 0||e.length===n))return e;let o=Rt(e),s=n!==void 0?` of length ${n}`:"",i=o?`length=${e.length}`:`type=${typeof e}`,r=(t?`"${t}" `:"")+"expected Uint8Array"+s+", got "+i;throw o?new RangeError(r):new TypeError(r)},Po=e=>Uint8Array.from(e),So=(e,n,t)=>Po(ge(e,t,n)),Ht=(e,n)=>e.toString(16).padStart(n,"0"),It=e=>{let n="";for(let t of ge(e))n+=Ht(t,2);return n},qt=e=>{let n="hex invalid";if(typeof e!="string")throw new TypeError(n);if(e.length%2||!/^[\da-f]*$/i.test(e))throw new RangeError(n);let t=new Uint8Array(e.length/2);for(let o=0,s=0;o<t.length;o++,s+=2){let i=e.charCodeAt(s),r=e.charCodeAt(s+1);t[o]=((i&15)+(i>>6)*9)*16+(r&15)+(r>>6)*9}return t},Et=()=>{let e=globalThis?.crypto?.subtle;if(e)return e;throw new Error("crypto.subtle must be defined, consider polyfill")},Ve=(...e)=>{let n=0;for(let s of e)n+=ge(s).length;let t=new Uint8Array(n),o=0;for(let s of e)t.set(s,o),o+=s.length;return t},jn=(e=be)=>{let n=globalThis?.crypto;if(typeof n?.getRandomValues!="function")throw new Error("crypto.getRandomValues must be defined, consider polyfill");return n.getRandomValues(new Uint8Array(e))},To=BigInt,Qe=(e,n,t,o="bad number: out of range")=>{if(typeof e!="bigint")throw new TypeError(o);if(n<=e&&e<t)return e;throw new RangeError(o)},O=(e,n=He)=>(e%=n)>=0n?e:n+e,hn=e=>O(e,Ye),Ao=(e,n)=>{if(e===0n)throw new Error("invert: expected non-zero number");if(n<=1n)throw new Error("invert: expected modulus > 1, got "+n);let t=O(e,n),o=n,s=0n,i=1n;for(;t!==0n;){let f=o/t,c=o-t*f,d=s-i*f;o=t,t=c,s=i,i=d}if(o!==1n)throw new Error("invert: does not exist");return O(s,n)},Nt=e=>{let n=Do[e];if(typeof n!="function")throw new Error("hashes."+e+" not set");return n},Mt=(e,n,t)=>ge(Nt(e)(n,t),be,"digest"),Dt=async(e,n,t)=>ge(await Nt(e)(n,t),be,"digest");var In=e=>{if(e instanceof Ie)return e;throw new TypeError("Point expected")},qn="bad point: not on curve",_t=e=>O(O(e*e)*e+7n),Bt=e=>Qe(e,0n,He),Ze=e=>Qe(e,1n,He),zt=e=>Qe(e,1n,Ye),wn=e=>!(e&1n),Ro=e=>Uint8Array.of(wn(e)?2:3),jt=e=>{let n=_t(Ze(e)),t=1n;for(let o=n,s=(He+1n)/4n;s>0n;s>>=1n)s&1n&&(t=t*o%He),o=o*o%He;if(O(t*t)!==n)throw new Error("sqrt invalid");return new Ie(e,wn(t)?t:O(-t),1n)},De=class De{constructor(n,t,o){ae(this,"X");ae(this,"Y");ae(this,"Z");this.X=Bt(n),this.Y=Ze(t),this.Z=Bt(o),zn(this)}static CURVE(){return bo}static fromAffine(n){let{x:t,y:o}=n;return t===0n&&o===0n?Xe:new De(t,o,1n)}static fromBytes(n){ge(n);let t=n.length,o=n[0],s=pn(n,1,33);try{if(t===33&&(o===2||o===3)){let i=jt(s);return o===3?i.negate():i}if(t===65&&o===4)return new De(s,pn(n,33,65),1n).assertValidity()}catch{throw new Error(qn)}throw new Error(qn)}static fromHex(n){return De.fromBytes(qt(n))}get x(){return this.toAffine().x}get y(){return this.toAffine().y}equals(n){let{X:t,Y:o,Z:s}=this,{X:i,Y:r,Z:f}=In(n);return O(t*f)===O(i*s)&&O(o*f)===O(r*s)}is0(){return this.Z===0n}negate(){return new De(this.X,O(-this.Y),this.Z)}double(){return this.add(this)}add(n){let{X:t,Y:o,Z:s}=this,{X:i,Y:r,Z:f}=In(n),c=0n,d=7n,v=0n,y=0n,h=0n,R=O(d*3n),P=O(t*i),S=O(o*r),u=O(s*f),m=O(t+o),l=O(i+r);m=O(m*l),l=O(P+S),m=O(m-l),l=O(t+s);let w=O(i+f);return l=O(l*w),w=O(P+u),l=O(l-w),w=O(o+s),v=O(r+f),w=O(w*v),v=O(S+u),w=O(w-v),h=O(c*l),v=O(R*u),h=O(v+h),v=O(S-h),h=O(S+h),y=O(v*h),S=O(P+P),S=O(S+P),u=O(c*u),l=O(R*l),S=O(S+u),u=O(P-u),u=O(c*u),l=O(l+u),P=O(S*l),y=O(y+P),P=O(w*l),v=O(m*v),v=O(v-P),P=O(m*S),h=O(w*h),h=O(h+P),new De(v,y,h)}subtract(n){return this.add(In(n).negate())}multiply(n,t=!0){if(!t&&n===0n)return Xe;if(zt(n),n===1n)return this;if(this.equals(Fe))return Io(n).p;let o=Xe,s=Fe,i=this;for(let r=0;t?r<256:n>0n;r++)n&1n?o=o.add(i):t&&(s=s.add(i)),i=i.double(),n>>=1n;return o}multiplyUnsafe(n){return this.multiply(n,!1)}toAffine(){let{X:n,Y:t,Z:o}=this;if(o===0n)return{x:0n,y:0n};if(o===1n)return{x:n,y:t};let s=Ao(o,He);if(O(o*s)!==1n)throw new Error("inverse invalid");return{x:O(n*s),y:O(t*s)}}assertValidity(){let{x:n,y:t}=this.toAffine();if(Ze(n),Ze(t),O(t*t)!==_t(n))throw new Error(qn);return this}toBytes(n=!0){let{x:t,y:o}=this.assertValidity().toAffine(),s=Be(t);return n?Ve(Ro(o),s):Ve(Uint8Array.of(4),s,Be(o))}toHex(n){return It(this.toBytes(n))}};ae(De,"BASE"),ae(De,"ZERO");var Ie=De,Fe=new Ie(xt,Ut,1n),Xe=new Ie(0n,1n,0n);Ie.BASE=Fe;Ie.ZERO=Xe;var Eo=(e,n,t)=>Fe.multiply(n,!1).add(e.multiply(t,!1)).assertValidity(),We=e=>To("0x"+(It(e)||"0")),pn=(e,n,t)=>We(e.subarray(n,t)),Be=e=>qt(Ht(Qe(e,0n,2n**256n),be*2)),Mo=e=>{let n=We(ge(e,be,"secret key"));return Qe(n,1n,Ye,"invalid secret key: outside of range")};var Ct="SHA-256",Do={hmacSha256Async:async(e,n)=>{let t=Et(),o=await t.importKey("raw",e,{name:"HMAC",hash:Ct},!1,["sign"]);return new Uint8Array(await t.sign("HMAC",o,n))},hmacSha256:void 0,sha256Async:async e=>new Uint8Array(await Et().digest(Ct,e)),sha256:void 0};var Bo=e=>{if(e=e===void 0?jn(48):e,ge(e),e.length<48||e.length>1024)throw new RangeError("expected 48-1024b");let n=O(We(e),Ye-1n);return Be(n+1n)},Co=e=>n=>{let t=Bo(n);return{secretKey:t,publicKey:e(t)}};var $t=e=>Uint8Array.from("BIP0340/"+e,n=>n.charCodeAt(0)),Nn=(e,...n)=>{let t=Mt("sha256",$t(e));return Mt("sha256",Ve(t,t,...n))},_n=(e,...n)=>Dt("sha256Async",$t(e)).then(t=>Dt("sha256Async",Ve(t,t,...n))),$n=e=>{let n=Mo(e),t=Fe.multiply(n),{x:o,y:s}=t.assertValidity().toAffine(),i=wn(s)?n:hn(-n),r=Be(o);return{d:i,px:r}},Fn=e=>hn(We(e)),Ft=(...e)=>Fn(Nn("challenge",...e)),Wt=async(...e)=>Fn(await _n("challenge",...e)),Kt=e=>$n(e).px,Oo=Co(Kt),Jt=(e,n,t)=>{let o=So(e,"message"),{px:s,d:i}=$n(n);return{m:o,px:s,d:i,a:ge(t,be)}},Vt=e=>{let n=Fn(e);if(n===0n)throw new Error("sign failed: k is zero");let{px:t,d:o}=$n(Be(n));return{rx:t,k:o}},Gt=(e,n,t,o)=>Ve(n,Be(hn(e+t*o))),Zt="invalid signature produced",Lo=(e,n,t=jn(be))=>{let{m:o,px:s,d:i,a:r}=Jt(e,n,t),f=Be(i^We(Nn("aux",r))),{rx:c,k:d}=Vt(Nn("nonce",f,s,o)),v=Gt(d,c,Ft(c,s,o),i);if(!Yt(v,o,s))throw new Error(Zt);return v},xo=async(e,n,t=jn(be))=>{let{m:o,px:s,d:i,a:r}=Jt(e,n,t),f=Be(i^We(await _n("aux",r))),{rx:c,k:d}=Vt(await _n("nonce",f,s,o)),v=Gt(d,c,await Wt(c,s,o),i);if(!await Qt(v,o,s))throw new Error(Zt);return v},Uo=(e,n)=>e instanceof Promise?e.then(n):n(e),Xt=(e,n,t,o)=>{let s=ge(e,64,"signature"),i=ge(n,void 0,"message"),r=ge(t,be,"publicKey"),f,c,d,v;try{let y=We(r);f=jt(y),c=Ze(pn(s,0,be)),d=zt(pn(s,be,64)),v=Ve(Be(c),r,i)}catch{return!1}return Uo(o(v),y=>{try{let{x:h,y:R}=Eo(f,d,hn(-y)).toAffine();return!(!wn(R)||h!==c)}catch{return!1}})},Yt=(e,n,t)=>Xt(e,n,t,Ft),Qt=async(e,n,t)=>Xt(e,n,t,Wt),Wn=zn({keygen:Oo,getPublicKey:Kt,sign:Lo,verify:Yt,signAsync:xo,verifyAsync:Qt}),Ho=()=>{let e=[],n=Fe,t=n;for(let o=0;o<33;o++){t=n,e.push(t);for(let s=1;s<128;s++)t=t.add(n),e.push(t);n=t.double()}return e},Ot,Lt=(e,n)=>{let t=n.negate();return e?t:n},Io=e=>{let n=Ot||(Ot=Ho()),t=Xe,o=Fe;for(let s=0;s<33;s++){let i=Number(e&255n);e>>=8n,i>128&&(i-=256,e+=1n);let r=s*128,f=r+Math.abs(i)-1,c=s%2!==0,d=i<0;i===0?o=o.add(Lt(c,n[r])):t=t.add(Lt(d,n[f]))}if(e!==0n)throw new Error("invalid wnaf");return{p:t,f:o}};var{floor:Kn,min:qo,sin:No}=Math,Z="Trystero",tn=(e,n)=>Array(e).fill(void 0).map(n),_o="0123456789AaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPpQqRrSsTtUuVvWwXxYyZz",de=e=>tn(e,()=>_o[Kn(Math.random()*62)]??"").join(""),te=de(20),le=Promise.all.bind(Promise),Vn=typeof window<"u",{entries:Se,fromEntries:Gn,keys:ce,values:pe}=Object,X=()=>{},vn="candidate",H=e=>(e!==null&&clearTimeout(e),null),x=e=>new Error(`${Z}: ${e}`),Ce=(e,n)=>e instanceof Error&&e.message?e.message:typeof e=="string"&&e?e:re(e??n),he=(e,n)=>e instanceof Error?e:x(Ce(e,n)),zo=new TextEncoder,jo=new TextDecoder,ue=e=>zo.encode(e),we=e=>jo.decode(e),Oe=e=>e.reduce((n,t)=>n+t.toString(16).padStart(2,"0"),""),qe=(...e)=>e.join("@"),$o=(e,n)=>{let t=[...e],o=()=>{let i=No(n++)*1e4;return i-Kn(i)},s=t.length;for(;s;){let i=Kn(o()*s--),r=t[s];t[s]=t[i],t[i]=r}return t},Zn=(e,n,t,o=!1)=>e.relayConfig?.urls||(o?$o(n,kn(e.appId)):n).slice(0,e.relayConfig?.redundancy??t),re=JSON.stringify,Te=e=>{try{return JSON.parse(e)}catch{throw x(`failed to parse JSON: ${e}`)}},kn=(e,n=Number.MAX_SAFE_INTEGER)=>e.split("").reduce((t,o)=>t+o.charCodeAt(0),0)%n,er=3333,Fo=6e4,en={},nn=null,Jn=null,Xn=()=>{nn||(nn=new Promise(e=>{Jn=e}).finally(()=>{Jn=null,nn=null}))},Yn=()=>{Jn?.()},Qn=(e,n,t)=>{let o={},s=!1,i=!1,r,f=X;o.isClosed=!1,o.ready=new Promise(d=>f=d);let c=()=>{if(o.isClosed)return;r=void 0,i=!1;let d=new WebSocket(e);d.onclose=()=>{if(o.isClosed||i)return;if(i=!0,nn){nn.then(c);return}let v=en[e]??(en[e]=er);r=setTimeout(c,Math.random()*v),en[e]=qo(v*2,Fo)},d.onmessage=v=>n(String(v.data)),o.socket=d,o.url=d.url,d.onopen=()=>{let v=s;s=!0,f(o),en[e]=er,v&&t?.()},o.send=v=>{d.readyState===1&&d.send(v)}};return o.close=()=>{o.isClosed=!0,r!==void 0&&(clearTimeout(r),r=void 0),o.socket.close()},c(),o};var et=e=>{let n={},t=new WeakMap,o=r=>{let f=t.get(r);if(!f)throw x("relay bookkeeping missing registration for relay client");return f},s=()=>{let r={},f=c=>r[c]??(r[c]={});return{forKey:f,forRelay:c=>f(o(c))}},i=(r,f)=>(n[r]=f,t.set(f,r),f);return{register:(r,f)=>{let c=n[r];return c||i(r,f())},keyOf:o,scoped:s,getSockets:()=>Gn(Se(n).flatMap(([r,f])=>{let c=e(f);return c?[[r,c]]:[]}))}},nr=()=>{if(Vn){let e=new AbortController;return addEventListener("online",Yn,{signal:e.signal}),addEventListener("offline",Xn,{signal:e.signal}),()=>e.abort()}return X};var tt="AES-GCM",nt={},Wo=e=>btoa(String.fromCharCode.apply(null,Array.from(new Uint8Array(e)))),Ko=e=>{let n=atob(e);return new Uint8Array(n.length).map((t,o)=>n.charCodeAt(o)).buffer},Ke=async(e,n)=>new Uint8Array(await crypto.subtle.digest(e,ue(n))),Le=async e=>nt[e]??(nt[e]=Array.from(await Ke("SHA-1",e)).map(n=>n.toString(36)).join("")),tr=async(e,n,t)=>crypto.subtle.importKey("raw",await crypto.subtle.digest({name:"SHA-256"},ue(`${e}:${n}:${t}`)),{name:tt},!1,["encrypt","decrypt"]),rr=async(e,n)=>Oe(await Ke("SHA-256",`${Z}:${e}:${n}`)),or="$",sr=",",ir=async(e,n)=>{let t=crypto.getRandomValues(new Uint8Array(16));return t.join(sr)+or+Wo(await crypto.subtle.encrypt({name:tt,iv:t},await e,ue(n)))},ar=async(e,n)=>{let[t,o]=n.split(or);return we(await crypto.subtle.decrypt({name:tt,iv:new Uint8Array(t?.split(sr).map(Number)??[])},await e,Ko(o??"")))};var Jo=18e4,cr=class{constructor(e){ae(this,"makeOffer");ae(this,"leased",new Map);ae(this,"destroyed",!1);this.makeOffer=e}claimLeased(e){let n=this.leased.get(e);n&&(H(n),this.leased.delete(e))}reclaimLeased(e){this.leased.has(e)&&(this.claimLeased(e),e.destroy())}checkout(e,n,t){let o=async(s=!1)=>{if(this.destroyed)throw x("room left while preparing offer");let i=this.makeOffer();try{let r=await t(i);if(this.destroyed)throw x("room left while preparing offer");return n?(this.leased.set(i,setTimeout(()=>{this.leased.delete(i),i.destroy()},Jo)),{peer:i,offer:r,claim:()=>this.claimLeased(i),reclaim:()=>this.reclaimLeased(i)}):{peer:i,offer:r}}catch(r){if(i.destroy(),!s&&!this.destroyed)return o(!0);throw r}};return le(tn(e,()=>o()))}getOffers(e,n){return this.checkout(e,!0,n)}destroy(){this.destroyed=!0,this.leased.forEach((e,n)=>{H(e),n.destroy()}),this.leased.clear()}};var rt=x("incorrect password for overlapping room"),lr=(e,n,t)=>{let o=r=>Ke("SHA-256",`${r}:${e}:${n}:${t}`).then(Oe),s=async(r,f,c)=>{if(!e)return;if(c){let v=de(36);await r({__trystero_pw:"challenge",c:v});let{data:y}=await f();if(!y||typeof y!="object"||y.__trystero_pw!=="response"||typeof y.h!="string")throw rt;let h=await o(v);if(y.h!==h)throw rt;return}let{data:d}=await f();if(!d||typeof d!="object"||d.__trystero_pw!=="challenge"||typeof d.c!="string")throw rt;await r({__trystero_pw:"response",h:await o(d.c)})};return{run:s,compose:r=>e||r?async(f,c,d,v)=>{await s(c,d,v),await r?.(f,c,d,v)}:void 0}},Vo=e=>{let n=Ce(e,"unknown error");return n.startsWith("handshake ")?n:`handshake failed: ${n}`},fr=({onPeerHandshake:e,onHandshakeError:n,handshakeTimeoutMs:t,sendHandshakeData:o,sendHandshakeReady:s,onActivate:i,onFailure:r})=>{let f={},c=(y,h)=>{let R=f[y];!R||h&&R.peer!==h||R.isActive||!R.didLocalHandshakePass||!R.didReceiveRemoteReady||(R.isActive=!0,R.handshakeTimer=H(R.handshakeTimer),i(y,R.peer))},d=(y,h,R)=>{let P=f[y];if(!P||P.peer!==h)return;let S=Vo(R);n?.(y,S),r(y,h,x(S))},v=(y,h)=>{let R=f[y];!R||R.peer!==h||R.isActive||(R.didLocalHandshakePass=!0,s("",y).catch(P=>d(y,h,x(`failed sending handshake readiness: ${Ce(P,"unknown send failure")}`))),c(y,h))};return{addPeer:(y,h)=>{f[y]={peer:h,isActive:!1,didLocalHandshakePass:!1,didReceiveRemoteReady:!1,handshakeTimer:null,pendingHandshakePayloads:[],handshakeWaiters:[]}},clearPeer:(y,h)=>{let R=f[y];R&&(R.handshakeTimer=H(R.handshakeTimer),R.pendingHandshakePayloads.length=0,R.handshakeWaiters.splice(0).forEach(P=>P.reject(h)),delete f[y])},canReceiveFromPeer:(y,h)=>{let R=f[y];return!!(R&&(R.isActive||h))},start:(y,h)=>{let R=f[y];if(!R||R.peer!==h)return;R.handshakeTimer=setTimeout(()=>d(y,h,x(`handshake timed out after ${t}ms`)),t);let P=async(m,l)=>{await o(m,y,l)},S=()=>new Promise((m,l)=>{let w=f[y];if(!w||w.peer!==h){l(x("peer disconnected during handshake"));return}let D=w.pendingHandshakePayloads.shift();if(D){m(D);return}w.handshakeWaiters.push({resolve:m,reject:E=>l(E)})}),u=te<y;Promise.resolve(e?.(y,P,S,u)).then(()=>v(y,h)).catch(m=>d(y,h,he(m,"handshake failed")))},receiveHandshakeData:(y,h,R)=>{let P=f[h];if(!P||P.isActive)return;let S=R===void 0?{data:y}:{data:y,metadata:R},u=P.handshakeWaiters.shift();if(u){u.resolve(S);return}if(P.pendingHandshakePayloads.length>=16){d(h,P.peer,x("too many pending handshake messages"));return}P.pendingHandshakePayloads.push(S)},receiveHandshakeReady:y=>{let h=f[y];!h||h.isActive||(h.didReceiveRemoteReady=!0,c(y))}}};var Go=15e3,Zo=150,Xo=5e3,dr="icecandidate",ur="icegatheringstatechange",Yo="iceconnectionstatechange",rn="offer",Qo="answer",es=/out of range/i,ns=128,ts=8192,mr=e=>e.replace(/ (\S+\.local) (\d+) typ host/g," 127.0.0.1 $2 typ host"),ot=(e,{trickleIce:n,rtcConfig:t,rtcPolyfill:o,turnConfig:s,_test_only_mdnsHostFallbackToLoopback:i})=>{let r=new(o??RTCPeerConnection)({iceServers:yr.concat(s??[]),...t}),f={},c=new Set,d=[],v=[],y=null,h=n!==!1,R=[],P=[],S,u=!1,m=!1,l=null,w=null,D=!1,E=b=>{S&&(S(b),S=void 0)},U=()=>w=H(w),$=()=>{D||(D=!0,c.forEach(b=>b()),y=H(y),v.length=0,U(),f.close?.())},N=b=>{b.type===rn&&(E(b),!f.signal&&!r.remoteDescription)||(f.signal?f.signal(b):d.push(b))},K=b=>{let B=f.signal;f.signal=q=>{B?.(q),b(q)},d.length>0&&d.splice(0).forEach(q=>f.signal?.(q))},G=b=>i?mr(b):b,Y=b=>{if(!i||typeof b.candidate!="string")return b;let B=mr(b.candidate);return B===b.candidate?b:{...b,candidate:B}},oe=b=>({type:b.localDescription?.type??rn,sdp:G(b.localDescription?.sdp??"")}),a=()=>{let b=r.remoteDescription?.sdp;return b?b.match(/a=ice-ufrag:([^\s]+)/)?.[1]??null:null},k=()=>(r.remoteDescription?.sdp?.match(/^m=/gm)??[]).length,A=b=>{if(!r.remoteDescription)return!1;let B=k();if(typeof b.sdpMLineIndex=="number"&&B>0&&b.sdpMLineIndex>=B)return!1;let q=a();return!(q&&b.usernameFragment&&b.usernameFragment!==q)},T=async b=>{try{return await r.addIceCandidate(b),!0}catch(B){if(B instanceof Error&&es.test(B.message)&&typeof b.sdpMLineIndex=="number")return!1;throw B}},L=b=>{R.length>=ns&&R.shift(),R.push(b)},M=async()=>{if(!r.remoteDescription||R.length===0)return;let b=a(),B=R.splice(0),q=[];for(let F of B)if(!(b&&F.usernameFragment&&F.usernameFragment!==b)){if(!A(F)){q.push(F);continue}await T(F)||q.push(F)}q.forEach(L)},p=async b=>{if(A(b)){await T(b)||L(b);return}L(b)},g=b=>{b.binaryType="arraybuffer",b.bufferedAmountLowThreshold=65535;let B=()=>{console.warn(`${Z}: invalid or excessive data before handler registration; disconnecting peer`),b.close(),r.close(),$()};b.onmessage=q=>{let F=q.data;if(!D){if(!(F instanceof ArrayBuffer)&&!ArrayBuffer.isView(F)||F.byteLength>16515){B();return}if(f.data)f.data(F);else{if(v.length>=64){B();return}y||(y=setTimeout(B,1e4)),v.push(F)}}},b.onopen=()=>f.connect?.(),b.onclose=$,b.onerror=({error:q})=>{D||q?.errorDetail==="sctp-failure"&&(q.sctpCauseCode===12||/^User-Initiated Abort\b/.test(q.message))||f.error?.(he(q,"data channel error"))}},C=t?.iceServers??yr.concat(s??[]),_=b=>C.some(({urls:B})=>(Array.isArray(B)?B:[B]).some(q=>b.test(q))),W=_(/^turns?:/i),I=!W&&_(/^stuns?:/i),se=W?/\btyp relay\b/:I?/\btyp (?:srflx|relay|prflx)\b/:/\btyp (?:host|srflx|relay|prflx)\b/,ee=async b=>(await new Promise(B=>{let q=null,F=null,ne=()=>{H(q),H(F),b.removeEventListener(ur,Ue),b.removeEventListener(dr,Me),c.delete(ne),B()},Ee=(J="")=>{let Q=`${b.localDescription?.sdp??""}
+${J}`;se.test(Q)&&(H(F),F=setTimeout(ne,Zo))},Ue=()=>{b.iceGatheringState==="complete"||D?ne():Ee()},Me=J=>{let{candidate:Q}=J;Q?Ee(Q.candidate):ne()};c.add(ne),q=setTimeout(ne,Go),b.addEventListener(ur,Ue),b.addEventListener(dr,Me),Ue()}),oe(b)),fe=async()=>{let b=h?oe(r):await ee(r);return D||N(b),b};e?(l=r.createDataChannel("data"),g(l)):r.ondatachannel=({channel:b})=>{l=b,g(b)};let Ae=async(b=!1)=>{if(r.connectionState==="closed"||!b&&(u||r.signalingState!=="stable")){r.connectionState==="closed"&&E();return}try{return u=!0,b&&(r.remoteDescription&&r.signalingState!=="stable"&&r.signalingState!=="closed"&&r.localDescription?.type===rn&&await r.setLocalDescription({type:"rollback"}),typeof r.restartIce=="function"&&r.restartIce()),await r.setLocalDescription(b?await r.createOffer({iceRestart:!0}):void 0),await fe()}catch(B){b||E(),f.error?.(he(B,"failed to create local offer"))}finally{u=!1}};r.onnegotiationneeded=async()=>Ae(!1),r.onicecandidate=({candidate:b})=>{if(!h||!b)return;let B=Y(typeof b.toJSON=="function"?b.toJSON():{candidate:b.candidate,sdpMid:b.sdpMid,sdpMLineIndex:b.sdpMLineIndex,usernameFragment:b.usernameFragment});N({type:vn,sdp:JSON.stringify(B)})};let Re=()=>{if(r.connectionState==="failed"||r.connectionState==="closed"||r.iceConnectionState==="failed"||r.iceConnectionState==="closed"){$();return}if(r.connectionState==="connected"||r.connectionState==="connecting"||r.iceConnectionState==="connected"||r.iceConnectionState==="completed"||r.iceConnectionState==="checking"){U();return}if(r.connectionState==="disconnected"||r.iceConnectionState==="disconnected"){w||(w=setTimeout(()=>{w=null,(r.connectionState==="disconnected"||r.iceConnectionState==="disconnected")&&$()},Xo));return}};r.onconnectionstatechange=Re,r.addEventListener(Yo,Re),r.ontrack=b=>{let B=b.streams[0];if(B){if(!f.track&&!f.stream){P.push({track:b.track,stream:B});return}f.track?.(b.track,B),f.stream?.(B)}};let ye=e?new Promise(b=>{S=b}):Promise.resolve();return e&&queueMicrotask(()=>{!u&&r.signalingState==="stable"&&!r.localDescription&&r.connectionState!=="closed"&&r.onnegotiationneeded?.(new Event("negotiationneeded"))}),{connection:r,get channel(){return l},get isDead(){return r.connectionState==="closed"},getOffer:async(b=!1)=>{if(e)return b?Ae(!0):S?ye:r.localDescription?.type===rn?h?oe(r):ee(r):ye},async signal(b){if(b.type==="candidate"){if(b.sdp.length>ts)return;try{let B=JSON.parse(b.sdp);B&&typeof B=="object"&&await p(Y(B))}catch(B){f.error?.(he(B,"failed to parse remote candidate"))}return}if(!(l?.readyState==="open"&&!b.sdp?.includes("a=rtpmap")))try{let B={...b,sdp:G(b.sdp)};if(b.type===rn){let q=u||r.signalingState!=="stable"&&!m;return q&&e?void 0:(q&&r.signalingState!=="stable"?await le([r.setLocalDescription({type:"rollback"}),r.setRemoteDescription(B)]):await r.setRemoteDescription(B),await M(),await r.setLocalDescription(),await fe())}if(b.type===Qo){m=!0;try{await r.setRemoteDescription(B),await M()}finally{m=!1}}}catch(B){f.error?.(he(B,"failed to apply remote signal"))}},sendData:b=>l?.send(b),destroy:()=>{U(),E(),l?.close(),r.close(),u=!1,m=!1,$()},setHandlers:b=>{let{signal:B,...q}=b;Object.assign(f,q),f.data&&v.length>0&&(y=H(y),v.splice(0).forEach(F=>f.data?.(F))),B&&K(B),(f.track||f.stream)&&P.length>0&&P.splice(0).forEach(({track:F,stream:ne})=>{f.track?.(F,ne),f.stream?.(ne)})},addStream:b=>b.getTracks().forEach(B=>r.addTrack(B,b)),removeStream:b=>r.getSenders().filter(B=>B.track&&b.getTracks().includes(B.track)).forEach(B=>r.removeTrack(B)),addTrack:(b,B)=>r.addTrack(b,B),removeTrack:b=>{let B=r.getSenders().find(q=>q.track===b);B&&r.removeTrack(B)},replaceTrack:(b,B)=>{let q=r.getSenders().find(F=>F.track===b);if(q)return q.replaceTrack(B)}}},yr=[...tn(3,(e,n)=>`stun:stun${n||""}.l.google.com:19302`),"stun:stun.cloudflare.com:3478"].map(e=>({urls:e}));var rs=1024,os=64,ss=128,is=8,as=new Uint8Array,cs=(e,n)=>{let t;try{t=e()}catch{return n(!1)}return typeof t=="boolean"?n(t):Promise.resolve(t).then(o=>n(o===!0),()=>n(!1))},gr=(e,n,t)=>n===2?t?e.slice():e:n===1?Te(we(e)):we(e),hr=(e,n,t,o)=>{try{e.progress(n,t,o)}catch(s){console.error(`${Z} progress handler error:`,s)}},pr=(e,n,t,o)=>{hr(e,1,t,o);try{e.receiver?.(n,t,o)}catch(s){console.error(`${Z} action handler error:`,s)}},wr=({fail:e,accept:n,refuse:t,maxReceiveBytes:o,chunkSize:s})=>{let i=new Map,r=new Map,f=new Set,c=new Map,d=0,v=0,y=0,h=!1,R=!1,P=a=>a.phase!=="released",S=a=>Math.min(o,a?.maxPayloadBytes??o),u=(a,k,A,T)=>{A?.reject(k),i.get(a.type)?.reject?.(a.peerId,a.metadata,k),T!==void 0&&t(a.peerId,T,k)},m=a=>{for(let k of Array.from(f))k.peerId===a&&(f.delete(k),f.add(k))},l=a=>{if(!P(a))return;a.phase="released",a.removeAbortListener?.(),a.timer=H(a.timer);let k=r.get(a.peerId);if(a.kind==="inline"){let A=k.inline.get(a.key);A.splice(A.indexOf(a),1),A.length||k.inline.delete(a.key),a.data=as}else k.bulk.delete(a.id),f.delete(a),a.data=null,a.transfer==="receiving"&&(y-=a.size,k.active===a&&(k.active=null,m(a.peerId)),R=!0);k.count--,d--,k.count||r.delete(a.peerId),a.controller?.abort()},w=(a,k)=>{P(a)&&(l(a),u(a,k,a.scope,a.kind==="bulk"?a.id:void 0))},D=(a,k)=>{if(a.phase!=="pending")return a.phase==="ready";if(a.size>S(k))return w(a,"payload exceeds receiver size limit"),!1;let A=a.scope?a.scope.receive:k.receive;if(!A)return k.receiver?(a.phase="ready",!0):!1;if(v>=ss||(c.get(a.peerId)??0)>=is)return w(a,"too many pending receive decisions"),!1;a.phase="deciding";let T=new AbortController;a.controller=T,v++,c.set(a.peerId,(c.get(a.peerId)??0)+1);let L=cs(()=>A({byteLength:a.size,peerId:a.peerId,signal:T.signal,...a.metadata===void 0?{}:{metadata:a.metadata}}),M=>{v--;let p=c.get(a.peerId)-1;return p?c.set(a.peerId,p):c.delete(a.peerId),P(a)?(M?a.phase="ready":w(a,"payload rejected by receiver"),M):!1});return typeof L=="boolean"?L:(L.then(()=>K()),!1)},E=(a,k,A)=>{let T;try{T=gr(A,a.format,a.kind==="inline")}catch{l(a),e(a.peerId,"invalid action payload");return}l(a),pr(k,T,a.peerId,a.metadata)},U=a=>{let k=i.get(a.type);P(a)&&k&&D(a,k)&&k.receiver&&E(a,k,a.data)},$=a=>{let k=i.get(a.type);if(!P(a)||!k||!D(a,k)||!k.receiver)return;if(a.transfer==="receiving"){a.offset===a.size&&E(a,k,a.data);return}let A=r.get(a.peerId);!A.active&&y+a.size<=o&&(A.active=a,a.transfer="receiving",y+=a.size,a.lastSeen=Date.now(),f.delete(a),n(a.peerId,a.id))},N=(a,k)=>{let A=r.get(a)?.inline.get(k);for(;A?.[0];){let T=A[0];if(U(T),P(T))break}},K=()=>{if(h){R=!0;return}h=!0;try{do{R=!1;for(let a of f)$(a);for(let[a,k]of r){for(let A of k.bulk.values())A.offset===A.size&&$(A);for(let A of k.inline.keys())N(a,A)}}while(R)}finally{h=!1}},G=a=>{let k=r.get(a.peerId);if(d>=rs||(k?.count??0)>=os)return u(a,"too many pending transfers",a.scope,a.kind==="bulk"?a.id:void 0),!1;if(k||(k={bulk:new Map,inline:new Map,active:null,count:0},r.set(a.peerId,k)),k.count++,d++,a.kind==="inline"){let T=k.inline.get(a.key)??[];T.push(a),k.inline.set(a.key,T)}else k.bulk.set(a.id,a),f.add(a);let A=()=>{let T=12e4-(Date.now()-a.lastSeen);T>0?a.timer=setTimeout(A,T):(w(a,"action transfer timed out"),K())};if(a.timer=setTimeout(A,12e4),a.scope){let{signal:T}=a.scope,L=()=>{w(a,"receive cancelled"),K()};if(T.addEventListener("abort",L,{once:!0}),a.removeAbortListener=()=>T.removeEventListener("abort",L),T.aborted)return L(),!1}return!0},Y=(a,k)=>{let A=i.get(a.type),T=A?.receiveScope?.(a.peerId,a.metadata);return T===null||T?.signal.aborted?(k!==void 0&&t(a.peerId,k,"unexpected response"),null):a.size>S(A)?(u(a,"payload exceeds receiver size limit",T,k),null):{action:A,scope:T}},oe=(a,k)=>({...a,...k?{scope:k}:{},phase:"pending",controller:null,lastSeen:Date.now(),timer:null});return{register:(a,k={})=>{let A={...k,receiver:null,receive:null,reject:null,progress:X};return i.set(a,A),{onMessage:T=>{A.receiver=T,K()},onReceive:T=>{A.receive=T,K()},onReject:T=>{A.reject=T},onProgress:T=>{A.progress=T}}},receiveInline:(a,k)=>{let A=Y(a);if(!A)return;let{action:T,scope:L}=A,M=L?`${a.type}\0${L.key}`:a.type;if(T?.receiver&&!(L?L.receive:T.receive)&&!r.get(a.peerId)?.inline.has(M)){let g;try{g=gr(k,a.format,!0)}catch{e(a.peerId,"invalid action payload");return}pr(T,g,a.peerId,a.metadata);return}let p={...oe(a,L),kind:"inline",key:M,data:k};G(p)&&N(a.peerId,M)},receiveOffer:(a,k)=>{if(r.get(a.peerId)?.bulk.has(k)){e(a.peerId,"duplicate action offer");return}let A=Y(a,k);if(!A)return;let T={...oe(a,A.scope),kind:"bulk",id:k,transfer:"waiting",offset:0,data:null};G(T)&&K()},receiveChunk:(a,k,A,T)=>{let L=r.get(a),M=L?.bulk.get(k);if(!M)return;if(M.transfer!=="receiving"||A!==M.offset||!T.length||T.length!==Math.min(s,M.size-M.offset)){e(a,"invalid action chunk offset or length");return}try{M.data??(M.data=new Uint8Array(M.size))}catch{w(M,"unable to allocate receive buffer"),K();return}M.data.set(T,M.offset),M.offset+=T.length;let p=Date.now();M.lastSeen=p;for(let g of f)g.phase==="ready"&&i.get(g.type)?.receiver&&(g.lastSeen=p);M.offset===M.size?($(M),P(M)&&L?.active===M&&(L.active=null,m(a)),K()):hr(i.get(M.type),M.offset/M.size,a,M.metadata)},cancel:(a,k)=>{let A=r.get(a)?.bulk.get(k);A&&(l(A),A.scope?.reject("response cancelled by sender")),K()},clearPeer:a=>{let k=r.get(a);if(k){for(let A of k.bulk.values())l(A);for(let A of k.inline.values()){let T=[...A];for(let L of T)l(L)}}K()}}};var lt=2,Pn=0,Sn=1,vr=2,st=3,it=4,Tn=5,at=36,kr=48,Ne=6,sn=14,ct=16384-sn,ls=256*1024**2,br=1024**2,Pr="bufferedamountlow",Sr="close",Tr="error",fs=1e4,xe=(e,n)=>{let t=x(n);return t.kind=e,t.name=e==="aborted"?"AbortError":t.name,t},An=e=>{if(e?.aborted)throw xe("aborted","operation aborted")},Ar=(e,n,t=Ne)=>{let o=new Uint8Array(t);return o[0]=lt,o[1]=e,new DataView(o.buffer).setUint32(2,n),o},Ge=xe,ds=(e,n,t=fs)=>e.readyState!=="open"||e.bufferedAmount<=e.bufferedAmountLowThreshold?Promise.resolve(e.readyState==="open"):new Promise(o=>{let s=!1,i=null,r=d=>{s||(s=!0,e.removeEventListener(Pr,f),e.removeEventListener(Sr,c),e.removeEventListener(Tr,c),n?.removeEventListener("abort",c),H(i),o(d))},f=()=>r(!0),c=()=>r(!1);if(e.addEventListener(Pr,f),e.addEventListener(Sr,c),e.addEventListener(Tr,c),n?.addEventListener("abort",c,{once:!0}),i=setTimeout(()=>r(!1),t),e.readyState!=="open"||n?.aborted){r(!1);return}e.bufferedAmount<=e.bufferedAmountLowThreshold&&r(!0)}),Er=({getPeer:e,getPeerIds:n,canReceiveFromPeer:t,onPeerError:o,throwIfAborted:s=An,maxReceiveBytes:i=ls})=>{if(!Number.isSafeInteger(i)||i<=0)throw x("maxReceiveBytes must be a positive safe integer");let r=new Map,f=new Map,c=new WeakSet,d=0,v=wr({fail:(u,m)=>h(u,m),accept:(u,m)=>R(u,m,st),refuse:(u,m,l)=>R(u,m,it,l),maxReceiveBytes:i,chunkSize:ct}),y=u=>{for(let m of f.get(u)?.values()??[])m.fail(Ge("disconnected","peer disconnected"));f.delete(u),v.clearPeer(u)},h=(u,m)=>{let l=e(u,!0);l&&!c.has(l)&&(c.add(l),console.warn(`${Z}: ${m}; disconnecting peer ${u}`),o(u,x(m)))},R=(u,m,l,w="")=>{let D=e(u,!0);if(!D)return;let E=ue(w).subarray(0,200),U=Ar(l,m,Ne+E.length);U.set(E,Ne);try{if((D.channel?.bufferedAmount??0)>br)throw x("control send buffer is full");D.sendData(U)}catch{h(u,"unable to send action control")}};return{makeInternalAction:(u,m={})=>{let l={sendToPending:!!m.sendToPending,receiveWhilePending:!!m.receiveWhilePending,...m.maxPayloadBytes===void 0?{}:{maxPayloadBytes:m.maxPayloadBytes},...m.receiveScope?{receiveScope:m.receiveScope}:{}},w=r.get(u);if(w){if(w.options.sendToPending!==l.sendToPending||w.options.receiveWhilePending!==l.receiveWhilePending||w.options.receiveScope!==l.receiveScope||w.options.maxPayloadBytes!==l.maxPayloadBytes)throw x(`action type "${u}" cannot be redefined`);return w.action}let D=ue(u);if(!u||u.includes("\0")||D.length>32)throw x("action type must contain 1\u201332 UTF-8 bytes and no null characters");let E={options:l,action:{...v.register(u,l),send:async(U,$,N,K,G)=>{if(s(G),U===void 0)throw x("action data cannot be undefined");let Y=U instanceof Blob,oe=Y||U instanceof ArrayBuffer||ArrayBuffer.isView(U),a=oe?2:typeof U=="string"?0:1,k=Y?U:U instanceof ArrayBuffer?new Uint8Array(U):ArrayBuffer.isView(U)?new Uint8Array(U.buffer,U.byteOffset,U.byteLength):ue(a===0?U:re(U)),A=k instanceof Blob?k.size:k.byteLength,T=N===void 0?new Uint8Array:ue(re(N));if(T.length>16336)throw x("action metadata is too large");let L=at+T.length+A<=16384;!L&&oe&&!(k instanceof Blob)&&(k=k.slice());let M=L?0:d++>>>0,p=L?at:kr,g=new Uint8Array(p+T.length+(L?A:0));g[0]=lt,g[1]=(L?Pn:Sn)|a<<4,g.set(D,2);let C=new DataView(g.buffer);C.setUint16(34,T.length),L||(C.setUint32(36,M),C.setFloat64(40,A)),g.set(T,p),L&&g.set(k instanceof Blob?new Uint8Array(await k.arrayBuffer()):k,p+T.length);let _=$?Array.isArray($)?$:[$]:n(l.sendToPending);await le([...new Set(_)].map(async W=>{let I=e(W,l.sendToPending);if(!I){console.warn(`${Z}: no peer with id ${W} found`);return}let se=null,ee=()=>{if(se)throw se;if(s(G),e(W,l.sendToPending)!==I||I.channel?.readyState==="closed")throw Ge("disconnected","peer disconnected")},fe=async J=>{ee();let Q=I.channel;if(Q&&(Q.readyState!=="open"||Q.bufferedAmount>Q.bufferedAmountLowThreshold)){if(!await ds(Q,G))throw s(G),Ge("disconnected","data channel stopped draining");ee()}try{I.sendData(J)}catch{throw Ge("disconnected","peer disconnected")}};if(L){await fe(g),K?.(1,W,N);return}let Ae=!1,Re=!1,ye=Date.now(),b,B,q=new Promise((J,Q)=>{b=J,B=Q});q.catch(X);let F=f.get(W)??new Map;if(F.has(M))throw x("action transmission id is still in use");f.set(W,F);let ne=null,Ee={accept:()=>!ne||se?!1:(ne=H(ne),b(),!0),fail:(J,Q=!1)=>{Q&&(Re=!0),se=J,B(J)},touch:()=>{ne&&(ye=Date.now())}};F.set(M,Ee);let Ue=()=>{let J=12e4-(Date.now()-ye);J>0?ne=setTimeout(Ue,J):Ee.fail(Ge("timeout","action offer timed out"))};ne=setTimeout(Ue,12e4);let Me=()=>{try{s(G)}catch(J){Ee.fail(J)}};G?.addEventListener("abort",Me,{once:!0});try{await fe(g),Ae=!0,await q;for(let J=0;J<A;J+=ct){ee();let Q=Math.min(ct,A-J),Pe=Ar(vr,M,sn+Q);new DataView(Pe.buffer).setFloat64(Ne,J),Pe.set(k instanceof Blob?new Uint8Array(await k.slice(J,J+Q).arrayBuffer()):k.subarray(J,J+Q),sn),await fe(Pe);for(let z of F.values())z.touch();K?.((J+Q)/A,W,N)}ee()}catch(J){throw Ae&&!Re&&e(W,!0)===I&&(!I.channel||I.channel.readyState==="open"&&(I.channel.bufferedAmount??0)<=br)&&R(W,M,Tn),J}finally{ne=H(ne),G?.removeEventListener("abort",Me),F.delete(M),!F.size&&f.get(W)===F&&f.delete(W)}}))}}};return r.set(u,E),E.action},handleData:(u,m)=>{if(m.byteLength<2||m.byteLength>16384){h(u,"invalid action frame");return}let l=new Uint8Array(m);if(l[0]!==lt){h(u,"incompatible action protocol version");return}let w=l[1]&15,D=l[1]>>>4,E=new DataView(l.buffer,l.byteOffset,l.byteLength);if(w>Tn||D>2||w>Sn&&D!==0){h(u,"invalid action frame");return}if(w>=vr){if(l.length<Ne||(w===st||w===Tn)&&l.length!==Ne||w===it&&l.length>206){h(u,"invalid action control");return}let A=E.getUint32(2);if(w===st){let T=f.get(u);if(T?.get(A)?.accept())for(let L of T.values())L.touch();return}if(w===it){f.get(u)?.get(A)?.fail(Ge("rejected",we(l.subarray(Ne))),!0);return}w===Tn?v.cancel(u,A):v.receiveChunk(u,A,l.length>=sn?E.getFloat64(Ne):NaN,l.subarray(sn));return}let U=w===Pn?at:kr;if(l.length<U){h(u,"invalid action header");return}let $=we(l.subarray(2,34)).replaceAll("\0",""),N=r.get($);if(!t(u,!!N?.options.receiveWhilePending))return;let K=E.getUint16(34),G=U+K,Y=w===Pn?l.length-G:E.getFloat64(40),oe=w===Sn?E.getUint32(36):0;if(!$||G>l.length||!Number.isSafeInteger(Y)||Y<0||w===Sn&&(Y===0||G!==l.length)){h(u,"invalid action proposal");return}let a;try{K&&(a=Te(we(l.subarray(U,G))))}catch{h(u,"invalid action metadata");return}let k={peerId:u,type:$,format:D,size:Y,...a===void 0?{}:{metadata:a}};w===Pn?v.receiveInline(k,l.subarray(G)):v.receiveOffer(k,oe)},clearPeer:y}};var Mr=e=>e&&typeof e=="object"&&!Array.isArray(e)&&typeof e.r=="string"?e:null,Rn=e=>{let n=Mr(e);return n?{r:n.r,...Object.hasOwn(n,"m")?{m:n.m}:{}}:null},ft=e=>{let n=Mr(e);return n?{r:n.r,...typeof n.e=="string"?{e:n.e}:{}}:null},an=(e,n)=>n===void 0?e:{...e,metadata:n},Dr=({getPeer:e,getPeerIds:n,canReceiveFromPeer:t,onPeerError:o,maxReceiveBytes:s})=>{let i=Object.create(null),r={},f=new Map,c=Er({getPeer:e,getPeerIds:n,canReceiveFromPeer:t,onPeerError:o,...s===void 0?{}:{maxReceiveBytes:s}}),d=c.makeInternalAction,v=c.handleData,y=u=>{let m=r[u];m&&(H(m.timer),m.signal&&m.abortHandler&&m.signal.removeEventListener("abort",m.abortHandler),delete r[u],m.controller.abort())},h=(u,m)=>{Se(r).forEach(([l,w])=>{w.peerId===u&&(y(l),w.reject(m))})},R=(u,m)=>{c.clearPeer(u);let l=f.get(u);l&&(f.delete(u),l.forEach(w=>w.abort())),h(u,xe("disconnected",Ce(m,"peer disconnected")))},P=d("@_response",{receiveScope:(u,m)=>{let l=ft(m),w=l&&r[l.r];if(!l||!w||w.peerId!==u)return null;let D=l.e===void 0?w.getReceive():null;return{key:l.r,signal:w.controller.signal,receive:D?E=>D({byteLength:E.byteLength,peerId:E.peerId,kind:"response",signal:E.signal}):null,reject:E=>{r[l.r]===w&&(y(l.r),w.reject(xe("rejected",E)))}}}});return P.onProgress((u,m,l)=>{let w=ft(l),D=w&&r[w.r];D&&D.peerId===m&&w?.e===void 0&&D.getReceiveProgress()?.(u,{peerId:m})}),P.onMessage((u,m,l)=>{let w=ft(l);if(!w)return;let D=r[w.r];if(!(!D||D.peerId!==m)){if(y(w.r),w.e!==void 0){D.reject(xe("rejected",w.e));return}D.resolve(u)}}),{makeAction:(u,m)=>{if(m&&"onRequest"in m&&m.kind!=="request")throw x('request actions must use kind: "request"');let l=m?.kind??"message",w=d(u),D=i[u];if(D){if(D.kind!==l)throw x(`action type "${u}" cannot be redefined`);return D.action}let E={kind:l,action:null,onReceive:m?.onReceive??null,onReceiveProgress:m?.onReceiveProgress??null},U=(a,k)=>a?(A,T)=>a(A,an({peerId:T},k)):void 0,$=(a,k,A)=>{let T=E.kind==="request"?Rn(A):null;E.onReceiveProgress?.(a,an({peerId:k},T?T.m:A))},N=a=>{E.onReceive=a,w.onReceive(a?k=>{let A=l==="request"?Rn(k.metadata):null;return a(an({byteLength:k.byteLength,peerId:k.peerId,signal:k.signal,kind:l},A?A.m:k.metadata))}:null)};if(N(E.onReceive),w.onProgress($),l==="message"){let a=m?.onMessage??null,k=(T,L,M)=>{let p=a;Promise.resolve().then(()=>p(T,an({peerId:L},M))).catch(g=>console.error(`${Z} action handler error:`,g))},A={send:async(T,L={})=>{await w.send(T,L.target,L.metadata,U(L.onProgress,L.metadata),L.signal)},get onMessage(){return a},set onMessage(T){a=T,w.onMessage(T?k:null)},get onReceive(){return E.onReceive},set onReceive(T){N(T)},get onReceiveProgress(){return E.onReceiveProgress},set onReceiveProgress(T){E.onReceiveProgress=T}};return E.action=A,i[u]=E,w.onMessage(a?k:null),A}w.onReject((a,k,A)=>{let T=Rn(k);T&&P.send(null,a,{r:T.r,e:A}).catch(X)});let K=m?.onRequest??null,G=(a,k,A)=>{let T=Rn(A);if(!T)return;let L=K,M=new AbortController,p=f.get(k);p||(p=new Set,f.set(k,p)),p.add(M),Promise.resolve().then(async()=>{let g=await L(a,{...an({peerId:k},T.m),signal:M.signal});if(g===void 0)throw x("request handler returned undefined");return g}).then(g=>P.send(g,k,{r:T.r}),g=>P.send(null,k,{r:T.r,e:Ce(g,"request failed").slice(0,512)})).catch(X).finally(()=>{let g=f.get(k);g?.delete(M),g&&!g.size&&f.delete(k),M.abort()})},Y=async(a,k)=>{let{target:A,metadata:T,onProgress:L,signal:M,timeoutMs:p}=k;if(An(M),!e(A,!1))throw xe("disconnected",`no active peer with id ${A}`);let g=de(20),C=new AbortController,_=new Promise((W,I)=>{let se={controller:C,getReceive:()=>E.onReceive,getReceiveProgress:()=>E.onReceiveProgress,peerId:A,resolve:W,reject:I,timer:null,...M===void 0?{}:{signal:M}},ee=()=>{y(g),I(xe("aborted","operation aborted"))};M&&(se.abortHandler=ee,M.addEventListener("abort",ee,{once:!0})),r[g]=se,p!==void 0&&(se.timer=setTimeout(()=>{y(g),se.reject(xe("timeout","request timed out"))},p))});try{let W=w.send(a,A,T===void 0?{r:g}:{r:g,m:T},U(L,T),C.signal);return await Promise.race([_,W.then(()=>_)])}finally{y(g)}},oe={request:Y,requestMany:async(a,k)=>{let{targets:A,onResult:T,...L}=k;return An(L.signal),await le(A.map(async M=>{try{let p={peerId:M,status:"fulfilled",value:await Y(a,{...L,target:M})};return T?.(p),p}catch(p){let g=he(p,"request failed");if(g.kind==="aborted"||!g.kind)throw g;let C=g.kind==="timeout"?{peerId:M,status:"timeout"}:g.kind==="disconnected"?{peerId:M,status:"disconnected"}:{peerId:M,status:"rejected",error:g};return T?.(C),C}}))},get onRequest(){return K},set onRequest(a){K=a,w.onMessage(a?G:null)},get onReceive(){return E.onReceive},set onReceive(a){N(a)},get onReceiveProgress(){return E.onReceiveProgress},set onReceiveProgress(a){E.onReceiveProgress=a}};return E.action=oe,i[u]=E,w.onMessage(K?G:null),oe},makeInternalAction:d,handleData:v,clearPeer:R}};var Br=e=>e&&typeof e=="object"&&!Array.isArray(e)&&typeof e.k=="string"?{key:e.k,...typeof e.s=="string"?{streamId:e.s}:{},...typeof e.t=="string"?{trackId:e.t}:{},...Object.hasOwn(e,"m")?{metadata:e.m}:{}}:null,Cr=e=>n=>{let t=e.get(n);return t||(t=de(20),e.set(n,t)),t},En=()=>{let e=new WeakMap,n=new WeakMap,t=new Map,o=new Map,s=new Map,i=new Map,r=new WeakMap,f=new WeakMap;return{getStreamKey:Cr(e),getTrackKey:Cr(n),rememberRemoteStream:(c,d,v)=>{let y=r.get(d);y!==void 0&&t.get(y)===d&&t.delete(y),r.set(d,c),t.set(c,d),v&&o.set(v,d),d.getTracks?.().forEach(h=>{typeof h.id=="string"&&i.set(h.id,{track:h,stream:d})})},getRemoteStream:(c,d)=>t.get(c)??(d?o.get(d):void 0),rememberRemoteTrack:(c,d,v,y,h)=>{let R={track:d,stream:v},P=f.get(d);P!==void 0&&s.get(P)?.track===d&&s.delete(P),f.set(d,c),s.set(c,R),y&&i.set(y,R),h&&o.set(h,v)},getRemoteTrack:(c,d)=>s.get(c)??(d?i.get(d):void 0),hasRemoteMedia:()=>t.size>0||s.size>0,clearRemote:()=>{t.clear(),o.clear(),s.clear(),i.clear()}}},Or=({iterate:e,isActive:n,getSharedMediaPeer:t,onPeerError:o})=>{let s={},i={},r={},f=En(),c=S=>t(S)?.__trysteroMedia??r[S]??(r[S]=En()),d=(S,u,m,l)=>{let w=S[u]??(S[u]=[]);if(w.length>=64){console.warn(`${Z}: too many pending ${l} metadata messages`),o(u,x("too many pending media metadata messages"));return}w.push(m)},v=(S,u,m)=>{if(!S?.length)return;let l=u?S.findIndex(w=>{let D=m(w);return!D||D===u}):0;return l>=0?S.splice(l,1)[0]:void 0},y=(S,u,m,l)=>{n(S)&&(c(S).rememberRemoteStream(u,m,typeof m.id=="string"?m.id:void 0),P.onPeerStream?.(m,S,l))},h=(S,u,m,l,w)=>{n(S)&&(c(S).rememberRemoteTrack(u,m,l,typeof m.id=="string"?m.id:void 0,typeof l.id=="string"?l.id:void 0),P.onPeerTrack?.(m,l,S,w))},R=(S,u,m,l,w,D={})=>{let E={k:u,...D,...m===void 0?{}:{m}};return e(S,async(U,$)=>{await l(E,U),await w($)})},P={addStream:(S,u,m)=>R(u.target,f.getStreamKey(S),u.metadata,m,l=>l.addStream(S),{s:S.id}),removeStream:(S,u)=>{e(u,(m,l)=>l.removeStream(S))},addTrack:(S,u,m,l)=>R(m.target,f.getTrackKey(S),m.metadata,l,w=>w.addTrack(S,u),{s:u.id,t:S.id}),removeTrack:(S,u)=>{e(u,(m,l)=>l.removeTrack(S))},replaceTrack:(S,u,m,l)=>R(m.target,f.getTrackKey(u),m.metadata,l,w=>w.replaceTrack(S,u),{t:S.id}),receiveStreamMeta:(S,u)=>{if(!n(u))return;let m=Br(S);if(!m)return;let l=c(u).getRemoteStream(m.key,m.streamId);if(l?.getTracks().length){y(u,m.key,l,m.metadata);return}d(s,u,m,"stream")},receiveTrackMeta:(S,u)=>{if(!n(u))return;let m=Br(S);if(!m)return;let l=c(u).getRemoteTrack(m.key,m.trackId);if(l&&l.track.readyState!=="ended"&&(!l.stream.getTracks||l.stream.getTracks().includes(l.track))){h(u,m.key,l.track,l.stream,m.metadata);return}d(i,u,m,"track")},receiveRemoteStream:(S,u)=>{if(!n(S))return;let m=v(s[S],typeof u.id=="string"?u.id:void 0,l=>l.streamId);m&&y(S,m.key,u,m.metadata)},receiveRemoteTrack:(S,u,m)=>{if(!n(S))return;let l=i[S],w=typeof u.id=="string"?u.id:void 0,D=typeof m.id=="string"?m.id:void 0,E=l&&w?l.findIndex($=>$.trackId===w):-1,U=E>=0?l?.splice(E,1)[0]:v(l,D,$=>$.streamId);U&&h(S,U.key,u,m,U.metadata)},clearPeer:S=>{delete s[S],delete i[S],delete r[S]},onPeerStream:null,onPeerTrack:null};return P};var Lr="beforeunload",us=1e4,_e=e=>"@_"+e,cn=new Set,xr=()=>cn.forEach(e=>e()),ms=e=>(cn.add(e),cn.size===1&&addEventListener(Lr,xr),()=>{cn.delete(e),cn.size||removeEventListener(Lr,xr)}),Ur=(e,n,t,{onPeerHandshake:o,onHandshakeError:s,handshakeTimeoutMs:i=us,maxReceiveBytes:r,isPassive:f=!1,onBeforeLeave:c}={})=>{let d={},v={},y={},h={onPeerJoin:null,onPeerLeave:null},R=X,P=null,S=(p,g)=>(p?Array.isArray(p)?p:[p]:ce(v)).flatMap(C=>{let _=v[C];return _?[Promise.resolve(g(C,_))]:(console.warn(`${Z}: no peer with id ${C} found`),[])}),u=(p,g,C)=>{let _=d[p];!_||g&&_!==g||(A.send("",p).catch(X),N(p,_,C))},m=(p,g)=>u(p,void 0,g),l=Or({onPeerError:m,iterate:(p,g)=>S(p,(C,_)=>g(C,_)),isActive:p=>!!v[p],getSharedMediaPeer:p=>d[p]??null}),w=Dr({onPeerError:m,...r===void 0?{}:{maxReceiveBytes:r},getPeer:(p,g)=>(g?d:v)[p],getPeerIds:p=>ce(p?d:v),canReceiveFromPeer:(p,g)=>M.canReceiveFromPeer(p,g)}),D=w.makeInternalAction,E=w.handleData,U=w.makeAction,$=(p,g=x("peer disconnected"))=>{let C=he(g,"peer disconnected");M.clearPeer(p,C),delete d[p],delete v[p],w.clearPeer(p,C),y[p]?.splice(0).forEach(_=>_.reject(C)),delete y[p],l.clearPeer(p)},N=(p,g,C)=>{let _=d[p];if(!_||g&&_!==g)return;let W=!!v[p];$(p,C),_.destroy(),W&&h.onPeerLeave?.(p),n(p)},K=()=>P??(P=(async()=>{c?.();let p=new AbortController;A.send("",void 0,void 0,void 0,p.signal).catch(X),await new Promise(g=>setTimeout(g,99)),p.abort();try{Se(d).forEach(([g,C])=>{C.destroy(),$(g,x("room left"))})}finally{try{R()}finally{t()}}})()),G=D(_e("ping")),Y=D(_e("pong")),oe=D(_e("signal")),a=D(_e("stream"),{maxPayloadBytes:65536}),k=D(_e("track"),{maxPayloadBytes:65536}),A=D(_e("leave"),{sendToPending:!0,receiveWhilePending:!0}),T=D(_e("hsdata"),{sendToPending:!0,receiveWhilePending:!0,maxPayloadBytes:65536}),L=D(_e("hsready"),{sendToPending:!0,receiveWhilePending:!0}),M=fr({...o===void 0?{}:{onPeerHandshake:o},...s===void 0?{}:{onHandshakeError:s},handshakeTimeoutMs:i,sendHandshakeData:T.send,sendHandshakeReady:L.send,onActivate:(p,g)=>{v[p]=g,g.setHandlers({signal:C=>{v[p]===g&&oe.send(C,p).catch(X)}}),h.onPeerJoin?.(p)},onFailure:(p,g,C)=>u(p,g,C)});return G.onMessage((p,g)=>{Y.send("",g).catch(X)}),Y.onMessage((p,g)=>{let C=y[g];C?.shift()?.resolve(),C&&!C.length&&delete y[g]}),oe.onMessage((p,g)=>{v[g]?.signal(p)}),a.onMessage((p,g)=>l.receiveStreamMeta(p,g)),k.onMessage((p,g)=>l.receiveTrackMeta(p,g)),A.onMessage((p,g)=>N(g,void 0,x("peer left room"))),T.onMessage((p,g,C)=>M.receiveHandshakeData(p,g,C)),L.onMessage((p,g)=>M.receiveHandshakeReady(g)),e((p,g)=>{let C=d[g];if(C){if(C===p)return;C.destroy(),$(g,x("peer replaced"))}d[g]=p,M.addPeer(g,p),p.setHandlers({data:_=>{d[g]===p&&E(g,_)},stream:_=>l.receiveRemoteStream(g,_),track:(_,W)=>l.receiveRemoteTrack(g,_,W),close:()=>N(g,p,x("peer disconnected")),error:_=>{console.error(`${Z} peer error:`,_),N(g,p,_)}}),M.start(g,p)}),Vn&&(R=ms(()=>K().catch(X))),{makeAction:U,leave:K,ping:async p=>{if(!v[p])throw x(`no active peer with id ${p}`);let g=Date.now();return await new Promise((C,_)=>{let W=y[p]??(y[p]=[]),I=()=>{let ee=y[p];if(!ee)return;let fe=ee.indexOf(se);fe>-1&&ee.splice(fe,1),ee.length||delete y[p]},se={resolve:()=>{I(),C()},reject:ee=>{I(),_(ee)}};W.push(se),G.send("",p).catch(ee=>se.reject(he(ee,"peer disconnected")))}),Date.now()-g},isPassive:()=>f,getPeers:()=>Gn(Se(v).map(([p,g])=>[p,g.connection])),addStream:(p,g={})=>l.addStream(p,g,a.send),removeStream:(p,g={})=>{l.removeStream(p,g.target)},addTrack:(p,g,C={})=>l.addTrack(p,g,C,k.send),removeTrack:(p,g={})=>{l.removeTrack(p,g.target)},replaceTrack:(p,g,C={})=>l.replaceTrack(p,g,C,k.send),get onPeerJoin(){return h.onPeerJoin},set onPeerJoin(p){h.onPeerJoin=p,p&&ce(v).forEach(g=>p(g))},get onPeerLeave(){return h.onPeerLeave},set onPeerLeave(p){h.onPeerLeave=p},get onPeerStream(){return l.onPeerStream},set onPeerStream(p){l.onPeerStream=p},get onPeerTrack(){return l.onPeerTrack},set onPeerTrack(p){l.onPeerTrack=p}}};var qr=1,Nr=2,Hr=(e,n)=>{let t=ue(e),o=new Uint8Array(3+t.byteLength+n.byteLength);return o[0]=qr,o[1]=t.byteLength>>>8&255,o[2]=t.byteLength&255,o.set(t,3),o.set(n,3+t.byteLength),o},ys=(e,n)=>{let t=ue(e),o=new Uint8Array(4+t.byteLength);return o[0]=Nr,o[1]=Number(n),o[2]=t.byteLength>>>8&255,o[3]=t.byteLength&255,o.set(t,4),o},Ir=(e,n)=>{if(e.byteLength<n+2)return null;let t=(e[n]??0)<<8|(e[n+1]??0),o=n+2+t;return t<=0||t>128||e.byteLength<o?null:{roomToken:we(e.subarray(n+2,o)),headerSize:o}},gs=e=>{let n=new Uint8Array(e);if(n.byteLength<3||n.byteLength>16515)return null;if(n[0]===qr){let t=Ir(n,1);return t?{type:"room",roomToken:t.roomToken,payload:n.subarray(t.headerSize).slice().buffer}:null}if(n[0]===Nr){let t=Ir(n,2);return t?{type:"presence",roomToken:t.roomToken,isPresent:n[1]===1}:null}return null},Mn=e=>{let{connection:n,channel:t}=e;return e.isDead||n.connectionState==="closed"||n.connectionState==="failed"||n.iceConnectionState==="closed"||n.iceConnectionState==="failed"||t?.readyState==="closing"||t?.readyState==="closed"},_r=e=>{if(Mn(e))return"stale";let{channel:n}=e;return!n||n.readyState!=="open"?"transient":"live"},zr=class{constructor(){ae(this,"rooms",new Map);ae(this,"unclaimedDataTimers",new WeakMap);ae(this,"pendingDataTimers",new WeakMap);ae(this,"byApp",{})}registerRoom(e,n,t,o){let s=this.rooms.get(e)??new Map;if(s.has(n))throw x("room membership already registered");let i={token:null,tokenPromise:t,...o};s.set(n,i),this.rooms.set(e,s);let r=()=>this.rooms.get(e)?.get(n)===i,f=c=>{if(i.token)for(let d of pe(this.byApp[e]??{}))try{this.sendRoomPresence(d,i.token,c)}catch{}};return t.then(c=>{if(r()){i.token=c;for(let d of pe(this.byApp[e]??{}))d.remoteRoomTokens.has(c)&&this.attachRoom(e,n,i,d),this.discardUnboundData(d);r()&&i.active&&f(!0)}}),{connect:(c,d,v)=>{if(!r()){d.destroy();return}let y=this.reusable(e,c);y&&y.peer!==d&&d.destroy();let h=y??this.register(e,c,d,v);if(this.attachRoom(e,n,i,h),!y)for(let R of s.values())R.active&&R.token&&this.sendRoomPresence(h,R.token,!0)},reuse:c=>{if(!r())return!1;let d=this.reusable(e,c);return d?(this.attachRoom(e,n,i,d),!0):!1},setActive:c=>{!r()||i.active===c||(i.active=c,f(c))},leave:()=>{if(r()){s.delete(n),s.size||this.rooms.delete(e),f(!1);for(let c of pe(this.byApp[e]??{})){let d=c.bindings[n];d?.handlers.close?.(),d?.detach(),this.discardUnboundData(c)}}}}}owns(e,n,t){return this.byApp[e]?.[n]?.peer===t}reusable(e,n){let t=this.byApp[e]?.[n];if(t&&Mn(t.peer)){this.clear(e,n,{destroyPeer:!0});return}return t}attachRoom(e,n,t,o){if(this.rooms.get(e)?.get(n)!==t||o.isClosing||this.get(e,o.peerId)!==o)return;let{proxy:s,isNew:i}=this.bind(n,t.tokenPromise,o,{onDetach:()=>t.onDetach(o.peerId,o.peer)});i&&t.onPeer(s,o.peerId,o.peer)}get(e,n){return this.byApp[e]?.[n]}sendRoomPresence(e,n,t){e.isClosing||Mn(e.peer)||e.peer.sendData(ys(n,t))}clear(e,n,{destroyPeer:t}){let o=this.byApp[e],s=o?.[n];if(!s||s.isClosing)return;s.idleTimer=H(s.idleTimer),this.clearDataTimers(s),s.isClosing=!0,t&&!s.peer.isDead&&s.peer.destroy();let i=pe(s.bindings);s.bindings={},s.bindingsByToken={},s.controlRoomId=null,delete o[n],i.forEach(r=>{r.handlers.close?.(),r.pendingData.length=0,r.pendingSendData.length=0,r.pendingTracks.length=0}),s.media.clearRemote(),s.pendingDataByToken.clear(),s.remoteRoomTokens.clear(),ce(o).length===0&&delete this.byApp[e]}register(e,n,t,o){var f;let s=this.byApp[e]?.[n];if(s){if(s.idleTimer=H(s.idleTimer),s.peer===t)return s;this.clear(e,n,{destroyPeer:!0})}let i={appId:e,peerId:n,peer:t,bindings:{},bindingsByToken:{},pendingDataByToken:new Map,remoteRoomTokens:new Set,idleTimer:null,controlRoomId:null,streamOwners:new Map,trackOwners:new Map,media:En(),idleMs:o,isClosing:!1};((f=this.byApp)[e]??(f[e]={}))[n]=i;let r=()=>{this.owns(e,n,t)&&this.clear(e,n,{destroyPeer:!0})};return t.setHandlers({data:c=>this.dispatchData(i,c),signal:c=>this.dispatchSignal(i,c),close:r,error:c=>{console.error(`${Z} peer error:`,c),r()},track:(c,d)=>this.dispatchTrack(i,c,d)}),i}bind(e,n,t,{onDetach:o}){let s=t.bindings[e];if(s)return t.idleTimer=H(t.idleTimer),{proxy:s.proxy,isNew:!1};let i={roomId:e,roomToken:null,roomTokenPromise:n,handlers:{},pendingData:[],pendingSendData:[],pendingTracks:[],detach:X,proxy:{}},r=()=>{if(t.bindings[e]!==i)return;let c=ce(t.bindings).length===1&&(t.streamOwners.size>0||t.trackOwners.size>0||t.media.hasRemoteMedia());c||this.pruneRoomOwnership(t,e),delete t.bindings[e],i.roomToken&&t.bindingsByToken[i.roomToken]===i&&delete t.bindingsByToken[i.roomToken],t.controlRoomId===e&&(t.controlRoomId=ce(t.bindings)[0]??null),this.discardUnboundData(t),o(),c?this.clear(t.appId,t.peerId,{destroyPeer:!0}):this.scheduleIdleTimer(t)},f={get connection(){return t.peer.connection},get channel(){return t.peer.channel},get isDead(){return t.peer.isDead},getOffer:c=>t.peer.getOffer(c),signal:c=>t.peer.signal(c),sendData:c=>{if(!i.roomToken){i.pendingSendData.push(c);return}t.peer.sendData(Hr(i.roomToken,c))},destroy:()=>r(),setHandlers:c=>{Object.assign(i.handlers,c),this.flushBindingQueues(t,i)},addStream:c=>{let d=t.streamOwners.get(c)??new Set,v=d.size===0;d.add(e),t.streamOwners.set(c,d),v&&t.peer.addStream(c)},removeStream:c=>this.releaseStreamOwner(t,c,e),addTrack:(c,d)=>{let v=t.trackOwners.get(c)??{stream:d,rooms:new Set},y=v.rooms.size===0;return v.stream=d,v.rooms.add(e),t.trackOwners.set(c,v),y?t.peer.addTrack(c,d):t.peer.connection.getSenders().find(h=>h.track===c)??t.peer.addTrack(c,d)},removeTrack:c=>this.releaseTrackOwner(t,c,e),replaceTrack:async(c,d)=>{let v=t.trackOwners.get(c);if(await t.peer.replaceTrack(c,d),v&&t.trackOwners.get(c)===v){t.trackOwners.delete(c);let y=t.trackOwners.get(d)??{stream:v.stream,rooms:new Set};v.rooms.forEach(h=>y.rooms.add(h)),t.trackOwners.set(d,y)}},__trysteroMedia:t.media};return i.proxy=f,i.detach=r,t.bindings[e]=i,t.controlRoomId??(t.controlRoomId=e),t.idleTimer=H(t.idleTimer),n.then(c=>{if(t.isClosing||t.bindings[e]!==i)return;i.roomToken=c,t.bindingsByToken[c]=i;let d=t.pendingDataByToken.get(c);d?.length&&(i.pendingData.push(...d),t.pendingDataByToken.delete(c));let v=i.pendingSendData.splice(0);Mn(t.peer)||v.forEach(y=>{try{t.peer.sendData(Hr(c,y))}catch{}}),this.flushBindingQueues(t,i),this.discardUnboundData(t)}),{proxy:f,isNew:!0}}releaseStreamOwner(e,n,t){let o=e.streamOwners.get(n);o&&(o.delete(t),o.size===0&&(e.streamOwners.delete(n),e.peer.removeStream(n)))}releaseTrackOwner(e,n,t){let o=e.trackOwners.get(n);o&&(o.rooms.delete(t),o.rooms.size===0&&(e.trackOwners.delete(n),e.peer.removeTrack(n)))}pruneRoomOwnership(e,n){e.streamOwners.forEach((t,o)=>this.releaseStreamOwner(e,o,n)),e.trackOwners.forEach((t,o)=>this.releaseTrackOwner(e,o,n))}scheduleIdleTimer(e){e.isClosing||ce(e.bindings).length>0||(e.idleTimer=H(e.idleTimer),e.idleTimer=setTimeout(()=>{let n=this.byApp[e.appId]?.[e.peerId];!n||ce(n.bindings).length>0||this.clear(e.appId,e.peerId,{destroyPeer:!0})},e.idleMs))}getSignalBinding(e){if(e.controlRoomId){let t=e.bindings[e.controlRoomId];if(t?.handlers.signal)return t}let n=pe(e.bindings).find(t=>!!t.handlers.signal);return n?(e.controlRoomId=n.roomId,n):null}flushBindingQueues(e,n){let{handlers:t}=n;if(t.data&&n.pendingData.length>0){let o=n.pendingData.splice(0);this.syncDataTimers(e),o.forEach(s=>t.data?.(s))}else this.syncDataTimers(e);(t.track||t.stream)&&n.pendingTracks.length&&n.pendingTracks.splice(0).forEach(({track:o,stream:s})=>{t.track?.(o,s),t.stream?.(s)})}unclaimedBufferedFrameCount(e){let n=0;for(let t of e.pendingDataByToken.values())n+=t.length;return n}boundBufferedFrameCount(e){let n=0;for(let t of pe(e.bindings))n+=t.pendingData.length;return n}bufferedFrameCount(e){return this.unclaimedBufferedFrameCount(e)+this.boundBufferedFrameCount(e)}clearDataTimers(e){H(this.unclaimedDataTimers.get(e)),this.unclaimedDataTimers.delete(e),H(this.pendingDataTimers.get(e)),this.pendingDataTimers.delete(e)}syncDataTimers(e){if(e.isClosing){this.clearDataTimers(e);return}this.unclaimedBufferedFrameCount(e)===0?(H(this.unclaimedDataTimers.get(e)),this.unclaimedDataTimers.delete(e)):this.unclaimedDataTimers.has(e)||this.unclaimedDataTimers.set(e,setTimeout(()=>{this.unclaimedDataTimers.delete(e),e.pendingDataByToken.clear()},1e4)),this.boundBufferedFrameCount(e)===0?(H(this.pendingDataTimers.get(e)),this.pendingDataTimers.delete(e)):this.pendingDataTimers.has(e)||this.pendingDataTimers.set(e,setTimeout(()=>{this.pendingDataTimers.delete(e),this.boundBufferedFrameCount(e)>0&&this.failData(e,"room data handler timed out")},1e4))}canBindRoomToken(e,n){return pe(e.bindings).some(t=>!t.roomToken)||[...this.rooms.get(e.appId)?.values()??[]].some(t=>!t.token||t.token===n)}discardUnboundData(e){for(let n of e.pendingDataByToken.keys())this.canBindRoomToken(e,n)||e.pendingDataByToken.delete(n);this.syncDataTimers(e)}failData(e,n){console.warn(`${Z}: ${n}; disconnecting peer ${e.peerId}`),this.clear(e.appId,e.peerId,{destroyPeer:!0})}dispatchData(e,n){if(e.isClosing)return;let t=gs(n);if(!t){this.failData(e,"invalid or incompatible room frame");return}if(t.type==="presence"){if(t.isPresent){if(!e.remoteRoomTokens.has(t.roomToken)&&e.remoteRoomTokens.size>=64){this.failData(e,"too many advertised rooms");return}e.remoteRoomTokens.add(t.roomToken);for(let[s,i]of this.rooms.get(e.appId)??[])i.token===t.roomToken&&this.attachRoom(e.appId,s,i,e)}else{e.remoteRoomTokens.delete(t.roomToken),e.pendingDataByToken.delete(t.roomToken);let s=e.bindingsByToken[t.roomToken];s?.handlers.close?.(),s?.detach(),this.syncDataTimers(e)}return}let o=e.bindingsByToken[t.roomToken];if(!o){if(!this.canBindRoomToken(e,t.roomToken)||this.bufferedFrameCount(e)>=64)return;let s=e.pendingDataByToken.get(t.roomToken)??[];s.push(t.payload),e.pendingDataByToken.set(t.roomToken,s),this.syncDataTimers(e);return}if(o.handlers.data)o.handlers.data(t.payload);else{if(this.bufferedFrameCount(e)>=64){this.failData(e,"too much data waiting for a room handler");return}o.pendingData.push(t.payload),this.syncDataTimers(e)}}dispatchSignal(e,n){let t=this.getSignalBinding(e);t?t.handlers.signal?.(n):n.type==="offer"&&this.clear(e.appId,e.peerId,{destroyPeer:!0})}dispatchTrack(e,n,t){pe(e.bindings).forEach(o=>{if(o.handlers.track||o.handlers.stream){o.handlers.track?.(n,t),o.handlers.stream?.(t);return}o.pendingTracks.push({track:n,stream:t})})}};var jr=23333,ps=57333,hs=12,ws=7533,vs=23333,ln="offer-placeholder",ks=["offer","answer","candidate"],$r=e=>{if(typeof e=="string")try{let n=Te(e);return n&&typeof n=="object"&&!Array.isArray(n)?n:null}catch{return null}return e&&typeof e=="object"&&!Array.isArray(e)?e:null},ze=(e,n)=>typeof e[n]=="string"&&e[n]?e[n]:void 0,Fr=e=>!!(e&&typeof e=="object"&&typeof e.signal=="function"&&typeof e.destroy=="function"&&typeof e.setHandlers=="function"),Wr=(e,n=!1)=>ks.some(t=>t in e&&(typeof e[t]!="string"||e[t]===""))||"peer"in e&&(n||e.peer!==void 0&&!Fr(e.peer)),Kr=e=>{let n=$r(e);if(!n||Wr(n,typeof e=="string"))return!1;let t=ze(n,"peerId");return!!(t&&t!==te&&n.passive!==!0&&!ze(n,"answer")&&!ze(n,"candidate"))},bs=(e,n,t,o,s,i)=>{e.toCipher(n).then(r=>{e.isLeaving()||!i()||o(t,re(s(r.sdp)))})},Ps=()=>({offerPeer:null,offerId:null,offerSdp:null,offerInitPromise:null,offerAnswered:!1,offerRelays:[],offerSignalRelays:[],offerSignalBacklog:[],offerRelayTimers:[],offerExpiryTimer:null,connectedPeer:null,connectedPeerUnhealthySinceMs:null,answeringExpiryTimer:null,answeringPeer:null,answerSent:!1,answerReplay:null,connectionErrorReported:!1}),Ss=e=>[...e.turnConfig??[],...e.rtcConfig?.iceServers??[]].some(({urls:n})=>(Array.isArray(n)?n:[n]).some(t=>/^turns?:/i.test(t))),Ts=(e,n)=>`could not connect to peer ${e} after exchanging SDP; ${Ss(n)?"check that your TURN server URLs and credentials are reachable by both peers":"configure TURN servers with turnConfig or rtcConfig.iceServers"}`,Cn=(e,n,t)=>{e.isLeaving()||n.connectedPeer||n.connectionErrorReported||(n.connectionErrorReported=!0,e.onJoinError?.({error:Ts(t,e.config),appId:e.appId,peerId:t,roomId:e.roomId}))},dn=(e,n)=>e[n]??(e[n]=Ps()),Dn=new WeakMap,On=e=>{Dn.delete(e),e.answeringExpiryTimer=H(e.answeringExpiryTimer),e.answeringPeer=null,e.answerSent=!1,e.answerReplay=null},fn=(e,n)=>{e.answeringPeer===n&&(On(e),e.connectedPeer!==n&&!n.isDead&&n.destroy())},Jr=(e,n)=>{e.answeringPeer&&e.answeringPeer!==n&&!e.answeringPeer.isDead&&e.answeringPeer.destroy(),On(e),e.connectedPeer=n,e.connectedPeerUnhealthySinceMs=null},mt=(e,n)=>{e?.connectedPeer===n&&(e.connectedPeer=null,e.connectedPeerUnhealthySinceMs=null)},Bn=(e,n,t)=>{e.connectedPeer&&(e.connectedPeer.isDead||e.connectedPeer.destroy(),e.connectedPeer=null,e.connectedPeerUnhealthySinceMs=null)},yt=(e,n)=>{e.offerRelayTimers[n]=H(e.offerRelayTimers[n]),e.offerRelays[n]&&(e.offerRelays[n]=void 0)},dt=(e,n)=>{e?.offerRelays[n]===ln&&yt(e,n)},je=e=>{Dn.delete(e),e.offerExpiryTimer=H(e.offerExpiryTimer),e.offerInitPromise=null,e.offerRelays.forEach((n,t)=>yt(e,t)),e.offerRelays=[],e.offerSignalRelays=[],e.offerRelayTimers=[],e.offerSignalBacklog=[],e.offerPeer&&e.offerPeer!==e.connectedPeer&&(e.offerPeer.isDead||e.offerPeer.destroy()),e.offerPeer=null,e.offerId=null,e.offerSdp=null,e.offerAnswered=!1,e.connectionErrorReported=!1},As=(e,n,t,o)=>{H(n.answeringExpiryTimer),n.answeringExpiryTimer=setTimeout(()=>{let s=e.peerStates[t];!s||s.connectedPeer||s.answeringPeer!==o||(s.answerSent&&Cn(e,s,t),fn(s,o),e.checkDeactivate())},vs)},ut=(e,n,t,o=ps)=>{H(n.offerExpiryTimer);let s=n.offerId;n.offerExpiryTimer=setTimeout(()=>{let i=e.peerStates[t];!i||i.connectedPeer||i.offerId!==s||(i.offerAnswered&&Cn(e,i,t),je(i),e.checkDeactivate())},o)},Vr=(e,n,t,o,s)=>{let i=()=>{n.offerPeer===o&&!n.connectedPeer&&(n.offerAnswered&&Cn(e,n,t),je(n)),e.disconnectPeer(o,t),e.checkDeactivate()};o.setHandlers({connect:()=>e.connectPeer(o,t),...s?{signal:s}:{},close:i,error:i})},Rs=(e,n,t)=>{if(n.offerPeer&&n.offerId&&n.offerSdp)return Promise.resolve({peer:n.offerPeer,offer:n.offerSdp,offerId:n.offerId});if(n.offerInitPromise)return n.offerInitPromise;let s=(async()=>{let i;try{i=(await e.offerManager.checkout(1,!1,e.encryptOffer))[0]}catch(c){if(e.isLeaving()||n.offerInitPromise!==s)return null;throw c}if(!i)throw x("failed to allocate offer peer");let{peer:r,offer:f}=i;return e.isLeaving()||n.offerInitPromise!==s?(r.destroy(),null):(n.offerPeer=r,n.offerId=de(hs),n.offerSdp=f,n.offerAnswered=!1,n.connectionErrorReported=!1,n.offerSignalBacklog=[],Vr(e,n,t,r,c=>{n.offerPeer===r&&(n.offerSignalBacklog.push(c),n.offerSignalRelays.forEach(d=>d?.(c)))}),ut(e,n,t),{peer:r,offer:f,offerId:n.offerId})})().finally(()=>{n.offerInitPromise===s&&(n.offerInitPromise=null)});return n.offerInitPromise=s},Gr=async(e,n,t,o,s=0)=>{let i=e.peerStates[t];if(!i||i.connectedPeer||i.answeringPeer||i.offerAnswered){dt(i,n);return}if(i.offerRelays[n]!==ln)return;let[r,f]=await le([Le(qe(e.rootTopicPlaintext,t)),Rs(e,i,t)]);if(!f){dt(i,n);return}if(e.isLeaving()){je(i);return}if(i.connectedPeer||i.answeringPeer||i.offerAnswered||i.offerRelays[n]!==ln){dt(i,n);return}i.offerRelayTimers[n]=H(i.offerRelayTimers[n]),i.offerRelays[n]=!0,i.offerRelayTimers[n]=setTimeout(()=>{if(s>=2||e.isLeaving()||i.connectedPeer||i.answeringPeer||i.offerAnswered||i.offerPeer!==f.peer||i.offerId!==f.offerId){Bs(e,t,n);return}i.offerRelays[n]=ln,Gr(e,n,t,o,s+1)},s===0&&e.announceIntervals[n]===void 0?2e3:(e.announceIntervals[n]??e.announceIntervalMs)*.9);let c=!1;i.offerSignalRelays[n]=d=>{c&&(e.isLeaving()||i.connectedPeer||i.offerPeer!==f.peer||i.offerId!==f.offerId||d.type!=="candidate"||bs(e,d,r,o,v=>({peerId:te,offerId:f.offerId,candidate:v,...e.isPassive?{passive:!0}:{}}),()=>!i.connectedPeer&&i.offerPeer===f.peer&&i.offerId===f.offerId))},o(r,re({peerId:te,offerId:f.offerId,offer:f.offer,...e.isPassive?{passive:!0}:{}})),c=!0,i.offerSignalBacklog.forEach(d=>i.offerSignalRelays[n]?.(d))},Es=async(e,n,t,o,s,i)=>{let r=dn(e.peerStates,t);if(r.answeringPeer||r.offerAnswered){let u=r.answerReplay,m=u?.lastSentAt[n];if(r.answeringPeer&&!r.answeringPeer.isDead&&u&&u.offer===o&&u.offerId===s&&(m===void 0||Date.now()-m>=1e3)){u.lastSentAt[n]=Date.now();let l=await Le(qe(e.rootTopicPlaintext,t));if(!e.isLeaving()&&r.answerReplay===u&&!r.connectedPeer){let w=D=>i(l,D);u.relays[n]=w,u.messages.forEach(w)}}return}let f=!!(r.offerPeer||r.offerRelays.some(Boolean));if(f&&te<t)return;f&&je(r);let c=e.initPeer(!1,e.config),d={offer:o,offerId:s,messages:[],lastSentAt:[],relays:[]};d.lastSentAt[n]=Date.now(),r.answeringPeer=c,r.answerSent=!1,r.answerReplay=d,r.connectionErrorReported=!1,As(e,r,t,c);let v=()=>{r.answeringPeer===c&&!r.connectedPeer&&r.answerSent&&Cn(e,r,t),fn(r,c),e.disconnectPeer(c,t),e.checkDeactivate()};c.setHandlers({connect:()=>e.connectPeer(c,t),close:v,error:v});let y;try{y=await e.toPlain({type:"offer",sdp:o})}catch{fn(r,c),e.onJoinError?.({error:"incorrect room password when decrypting offer",appId:e.appId,peerId:t,roomId:e.roomId});return}if(c.isDead){fn(r,c);return}let h=await Le(qe(e.rootTopicPlaintext,t));if(e.isLeaving()||r.answerReplay!==d)return;d.relays[n]=u=>i(h,u);let R=[],P=!1,S=u=>{e.toCipher(u).then(m=>{if(e.isLeaving()||r.answeringPeer!==c||c.isDead)return;let l={peerId:te};u.type==="answer"?(r.answerSent=!0,l.answer=m.sdp):l.candidate=m.sdp,s&&(l.offerId=s),e.isPassive&&(l.passive=!0);let w=re(l),D=Date.now();d.messages.push(w),d.relays.forEach((E,U)=>{E&&(d.lastSentAt[U]=D,E(w))}),u.type==="answer"&&!P&&(P=!0,R.splice(0).forEach(S))})};c.setHandlers({signal:u=>{if(!(e.isLeaving()||r.answeringPeer!==c||c.isDead)&&!(u.type!=="answer"&&u.type!=="candidate")){if(u.type==="candidate"&&!P){R.push(u);return}S(u)}}}),await c.signal(y)},Ms=async(e,n,t,o,s)=>{let i;try{i=await e.toPlain({type:vn,sdp:t})}catch{return}let r=e.peerStates[n],f=o&&r?.offerPeer&&r.offerId===o?r.offerPeer:null,c=!o||r?.answerReplay?.offerId===o?r?.answeringPeer:null,d=!o&&r?.offerPeer?r.offerPeer:null,v=s&&!s.isDead?s:f??c??d;v&&!v.isDead&&v.signal(i)},Ds=async(e,n,t,o,s)=>{let i;try{i=await e.toPlain({type:"answer",sdp:t})}catch{s&&(e.offerManager.reclaimLeased(s),s.isDead||s.destroy()),e.onJoinError?.({error:"incorrect room password when decrypting answer",appId:e.appId,peerId:n,roomId:e.roomId});return}if(s){let r=dn(e.peerStates,n);if(e.offerManager.claimLeased(s),r.connectedPeer||r.offerAnswered||r.answeringPeer&&!r.answeringPeer.isDead&&te>n){s.destroy();return}if(r.answeringPeer){let f=r.answeringPeer;fn(r,f)}je(r),r.offerPeer=s,r.offerId=o??null,r.offerAnswered=!0,ut(e,r,n,jr),Vr(e,r,n,s),s.signal(i)}else{let r=e.peerStates[n];if(!r||!r.offerPeer||r.offerAnswered||o&&r.offerId&&o!==r.offerId||r.offerPeer.isDead)return;r.offerAnswered=!0,ut(e,r,n,jr),r.offerPeer.signal(i)}},Bs=(e,n,t)=>{let o=e.peerStates[n];!o||o.connectedPeer||o.offerRelays[t]&&(yt(o,t),e.checkDeactivate())},Zr=e=>n=>async(t,o,s)=>{if(e.isLeaving())return;let i=$r(o);if(!i||Wr(i,typeof o=="string"))return;let r=ze(i,"peerId")??"",f=ze(i,"offer"),c=ze(i,"answer"),d=ze(i,"candidate"),v=ze(i,"offerId"),y=Fr(i.peer)?i.peer:void 0,h=i.passive===!0;if(!r||r===te)return;let[R,P]=await le([e.rootTopicP,e.selfTopicP]);if(e.isLeaving()||t!==R&&t!==P||e.isPassive&&h||(e.isPassive&&!e.isActive&&!c&&!d&&(e.isActive=!0,e.requeueAnnounce?.()),e.isPassive&&!e.isActive))return;let S=e.peerStates[r],u=S?.connectedPeer;if(u&&S){let m=_r(u);if(m==="live"){S.connectedPeerUnhealthySinceMs=null;return}if(m==="stale")Bn(S,r,"message-from-stale-peer");else{let l=Date.now(),w=S.connectedPeerUnhealthySinceMs??l;if(S.connectedPeerUnhealthySinceMs=w,l-w<ws)return;Bn(S,r,"message-from-prolonged-disconnect")}}if(!e.reusePeer(r)){if(r&&!f&&!c&&!d){let m=dn(e.peerStates,r),l=te<r;if(m.answeringPeer||m.connectedPeer||m.offerAnswered)return;if(!l&&!m.offerPeer){let w=Dn.get(m);w||(w=[],Dn.set(m,w));let D=w[n];if(D!==void 0&&Date.now()-D<1e3)return;w[n]=Date.now();let E=await Le(qe(e.rootTopicPlaintext,r));!e.isLeaving()&&!m.connectedPeer&&!m.answeringPeer&&!m.offerAnswered&&s(E,re({peerId:te}));return}return m.offerRelays[n]?void 0:(m.offerRelays[n]=ln,Gr(e,n,r,s))}if(f)return Es(e,n,r,f,v,s);if(d)return Ms(e,r,d,v,y);if(c)return Ds(e,r,c,v,y)}};var Ln=5333,Cs=[233,533,1333],Xr=7533,Os=123333,gt=({init:e,subscribe:n,announce:t,deactivate:o})=>{let s={},i={},r=new zr,f=()=>pe(s).some(y=>ce(y).length>0),c=!1,d=[],v=X;return(y,h,R)=>{if(!y)throw x("requires a config map as the first argument");if(R&&typeof R!="object")throw x("third argument must be a callbacks object");let{appId:P}=y,S=R?.onJoinError,u=R?.onPeerHandshake,m=R?.handshakeTimeoutMs;if(!P)throw x("config map is missing appId field");if(!h)throw x("roomId argument required");if(y.maxReceiveBytes!==void 0&&(!Number.isSafeInteger(y.maxReceiveBytes)||y.maxReceiveBytes<=0))throw x("maxReceiveBytes must be a positive safe integer");if(m!==void 0&&(!Number.isFinite(m)||m<=0))throw x("handshakeTimeoutMs must be a positive number");if(s[P]?.[h])return s[P][h];i[P]?.[h]?.(!0);let l=qe(Z,P,h),w=Le(l),D=Le(qe(l,te)),E=tr(y.password??"",P,h),U=rr(P,h),$=y._test_only_sharedPeerIdleMs??Os,N=!1,K=z=>async j=>({type:j.type,sdp:await z(E,j.sdp)}),G=K(ar),Y=K(ir),oe=()=>ot(!0,y),a=!1,k=new cr(oe),A=async z=>{let j=await z.getOffer();if(!j||j.type!=="offer")throw x("failed to get offer for peer");return(await Y(j)).sdp},T=(z,j)=>{Pe.connect(j,z,$)},L=!1,M=()=>{g||!a||L||(L=!0,queueMicrotask(()=>{L=!1,N||I.requeueAnnounce?.()}))},p=(z,j)=>{if(N)return;let V=I.peerStates[j];V?.connectedPeer===z&&(Bn(V,j,"close-event"),W(),M())},g=!!y.passive,C,_=X,W=()=>{if(!g||!I.isActive)return;let z=!1;Se(I.peerStates).forEach(([j,V])=>{V.connectedPeer||V.answeringPeer||V.offerInitPromise||V.offerPeer||V.offerRelays.some(Boolean)?z=!0:delete I.peerStates[j]}),z||(I.isActive=!1,C=H(C),ye.forEach(H),ye.length=0,_(),Pe.setActive(!1))},I={appId:P,roomId:h,config:y,peerStates:{},rootTopicPlaintext:l,rootTopicP:w,selfTopicP:D,toPlain:G,toCipher:Y,isLeaving:()=>N,isPassive:g,isActive:!g,onJoinError:S,offerManager:k,encryptOffer:A,initPeer:ot,connectPeer:T,disconnectPeer:p,reusePeer:z=>Pe.reuse(z),checkDeactivate:W,announceIntervals:[],announceIntervalMs:Ln},se={config:y,appId:P,roomId:h,isPassive:g},ee=Zr(I);if(!c){let z=e(y);d=(Array.isArray(z)?z:[z]).map(j=>Promise.resolve(j)),c=!0,v=y.relayConfig?.manualReconnection?X:nr()}let fe=d.map(()=>Ln),Ae=d.map(()=>0),Re=d.map(()=>0),ye=[],b=d.map(async(z,j)=>n(await z,await w,await D,ee(j),V=>k.getOffers(V,A),se));le([w,D]).then(([z,j])=>{if(N)return;let V=async(ve,ie)=>{if(N||g&&!I.isActive)return;let $e=g?{passive:!0}:void 0,ke;try{ke=await t(ve,z,j,$e,se),Re[ie]=0}catch(mo){if(N)return;let At=Re[ie]??0;At===0&&y.relayConfig?.warnOnRelayFailure!==!1&&console.warn(`${Z}: announce failed - ${Ce(mo,"")}`),Re[ie]=At+1}if(N||g&&!I.isActive||ke&&typeof ke!="number"&&"stopAnnouncing"in ke)return;typeof ke=="number"?(I.announceIntervals[ie]=ke,fe[ie]=ke):ke&&(fe[ie]=ke.nextAnnounceMs,a||(a=ke.reannounceOnDisconnect===!0));let Hn=Ae[ie]??0;Ae[ie]=Hn+1;let St=fe[ie]??Ln,Tt=Cs[Hn]??(Hn===3&&typeof ke=="object"?Ln:void 0);ye[ie]=setTimeout(()=>{V(ve,ie)},typeof Tt=="number"?Math.min(St,Tt):St)};_=()=>{o&&d.forEach(async ve=>{let ie=await ve;N||o(ie,z,j,se)})},I.requeueAnnounce=()=>{ye.forEach(H),ye.length=0,C=H(C),Pe.setActive(!0),C=setTimeout(W,Xr),d.forEach(async(ve,ie)=>{let $e=await ve;$e&&!N&&(Ae[ie]=0,V($e,ie))})},b.forEach(async(ve,ie)=>{if(await ve,N)return;let $e=await d[ie];$e&&!N&&(!g||I.isActive)&&V($e,ie)})});let B=X,q=y.password??"",{compose:F}=lr(q,P,h),ne=F(u),Ee=()=>{s[P]?.[h]===Q&&(delete s[P][h],ce(s[P]).length===0&&delete s[P])},Ue=()=>{i[P]?.[h]===Me&&(delete i[P][h],ce(i[P]).length===0&&delete i[P])},Me=(z=!1)=>{N||(N=!0,B=X,Ee(),Ue(),Pe.leave(),Se(I.peerStates).forEach(([j,V])=>{V.connectedPeer&&!V.connectedPeer.isDead&&(r.owns(P,j,V.connectedPeer)||V.connectedPeer.destroy()),V.answeringPeer&&!V.answeringPeer.isDead&&V.answeringPeer.destroy(),je(V),On(V),V.connectedPeer=null,V.connectedPeerUnhealthySinceMs=null}),ye.forEach(H),C=H(C),b.forEach(async j=>{(await j)()}),k.destroy(),!(z||f())&&(c=!1,v()))},J={...y.maxReceiveBytes===void 0?{}:{maxReceiveBytes:y.maxReceiveBytes},...ne?{onPeerHandshake:ne}:{},...m===void 0?{}:{handshakeTimeoutMs:m},isPassive:g,onBeforeLeave:()=>{Ee(),(i[P]??(i[P]={}))[h]=Me},onHandshakeError:(z,j)=>S?.({error:j.replace(/^handshake failed: /,""),appId:P,peerId:z,roomId:h})};s[P]??(s[P]={});let Q=Ur(z=>B=z,z=>{if(N)return;let j=I.peerStates[z];j?.connectedPeer&&mt(j,j.connectedPeer),W(),M()},()=>Me(!1),J),Pe=r.registerRoom(P,h,U,{active:!g||I.isActive,onPeer:(z,j,V)=>{let ve=dn(I.peerStates,j);Jr(ve,V),g&&!I.isActive&&(I.isActive=!0,Pe.setActive(!0),I.requeueAnnounce?I.requeueAnnounce():(C=H(C),C=setTimeout(W,Xr))),B(z,j),je(ve)},onDetach:(z,j)=>{mt(I.peerStates[z],j),W()}});return s[P][h]=Q}};var Ls=6e4,pt=e=>{if(!e)throw x("topic strategy missing room context");return e},un=(e,n,t,o)=>({kind:n,appId:e.appId,roomId:e.roomId,rootTopic:t,selfTopic:o}),ht=({steadyAnnounceIntervalMs:e=Ls,reannounceOnDisconnect:n=!0,init:t,subscribeTopic:o,publishTopic:s,unpublishTopic:i})=>gt({init:t,subscribe:async(r,f,c,d,v,y)=>{let h=pt(y),R=(E,U)=>{s(r,E,U,un(h,"signal",f,c))},P=null,S=!1,u=null,m=!1,l=E=>{S||(S=!0,E())},w=()=>(u||(u=Promise.resolve(o(r,c,(E,U)=>{m||d(E,U,R)},un(h,"self",f,c))).then(E=>{P=E,m&&l(E)})),u);h.isPassive||await w();let D=await o(r,f,async(E,U)=>{m||(h.isPassive&&Kr(U)&&await w(),m||await d(E,U,R))},un(h,"root",f,c));return()=>{m=!0,P&&l(P),D()}},announce:async(r,f,c,d,v)=>{let y=pt(v),h=await s(r,f,re({peerId:te,...d}),un(y,"announce",f,c));return typeof h=="number"||h!==void 0&&"stopAnnouncing"in h?h:{nextAnnounceMs:h?.nextAnnounceMs??e,reannounceOnDisconnect:h?.reannounceOnDisconnect??n}},...i?{deactivate:(r,f,c,d)=>{let v=pt(d);return i(r,f,un(v,"announce",f,c))}}:{}});var kt=et(e=>e.socket),xs=5,Qr="x",eo="EVENT",{secretKey:Us,publicKey:Hs}=Wn.keygen(),Is=Oe(Hs),wt={},Yr=250,Je=6e4,qs=9e5,bt=5333,mn=new WeakMap,Un=kt.scoped(),vt=new WeakSet,Ns=e=>{let n=mn.get(e),t=Math.min(n?.delayMs?Math.max(Je,n.delayMs*2):Je,qs);return mn.set(e,{delayMs:t,untilMs:Date.now()+t}),t},yn=e=>{let n=mn.get(e);if(!n)return 0;let t=n.untilMs-Date.now();return t>0?t:0},xn=e=>({nextAnnounceMs:e}),_s={stopAnnouncing:!0},zs=e=>vt.has(e)?!1:(vt.add(e),mn.delete(e),e.close?.(),!0),no=()=>Math.floor(Date.now()/1e3),to=e=>wt[e]??(wt[e]=kn(e,1e4)+2e4),js=async(e,n)=>{let t={kind:to(e),tags:[[Qr,e]],created_at:no(),content:n,pubkey:Is},o=await Ke("SHA-256",re([0,t.pubkey,t.created_at,t.kind,t.tags,t.content]));return re([eo,{...t,id:Oe(o),sig:Oe(await Wn.signAsync(o,Us))}])};var me={},ro=e=>{e.flushWaiters.forEach(n=>n()),e.flushWaiters.clear()},$s=(e,n,t)=>{var s;let o=me[s=e.url]??(me[s]={subIds:[],topics:new Map,updateTimer:null,flushWaiters:new Set,retryTimer:null,retryMs:bt,pendingEose:new Set,requestedAt:0});o.topics.set(n,t),oo(e,o)},Fs=(e,n)=>{let t=me[e.url];t&&(t.topics.delete(n),delete Un.forRelay(e)[n],t.topics.size===0?(t.retryTimer!==null&&clearTimeout(t.retryTimer),t.updateTimer!==null&&(clearTimeout(t.updateTimer),t.updateTimer=null),ro(t),t.subIds.forEach(o=>e.send(re(["CLOSE",o]))),delete me[e.url]):oo(e,t))},oo=(e,n)=>{n.updateTimer===null&&(n.updateTimer=setTimeout(()=>{n.updateTimer=null;try{so(e)}finally{ro(n)}},0))},Ws=e=>{let n=me[e.url];return!n||n.updateTimer===null?Promise.resolve():new Promise(t=>n.flushWaiters.add(t))},so=e=>{let n=me[e.url];if(!n||n.topics.size===0)return;let t=[...n.topics.keys()],o=[],s=no();for(let i=0;i<t.length;i+=Yr)o.push(t.slice(i,i+Yr));for(;n.subIds.length>o.length;){let i=n.subIds.pop();i&&e.send(re(["CLOSE",i]))}n.pendingEose.clear(),n.requestedAt=Date.now(),o.forEach((i,r)=>{var c;let f=(c=n.subIds)[r]??(c[r]=de(64));n.pendingEose.add(f),e.send(re(["REQ",f,{kinds:[...new Set(i.map(to))],since:s,"#x":i}]))})},io=e=>{let n=me[e.url];if(n&&n.topics.size>0&&!e.isClosed){if(yn(e)>0){lo(e,!0);return}n.retryTimer!==null&&(clearTimeout(n.retryTimer),n.retryTimer=null),so(e),ao(e)}},ao=e=>{Object.entries(Un.forRelay(e)).forEach(([n,t])=>{co(e,n,t,!0)})},co=async(e,n,t,o)=>{if(vt.has(e)||e.isClosed)return o?_s:void 0;let s=yn(e);if(s>0||e.socket.readyState!==1)return o?xn(Math.max(Je,s)):void 0;let i=await js(n,o?re({...Te(t),nonce:de(8)}):t);if(o&&!me[e.url]?.topics.has(n))return xn(Je);if(yn(e)>0||e.isClosed||e.socket.readyState!==1)return o?xn(Je):void 0;if(e.send(i),o)return xn(Je)},lo=(e,n)=>{let t=me[e.url];if(!t||t.retryTimer!==null&&!n)return;t.retryTimer!==null&&clearTimeout(t.retryTimer);let o=n?yn(e):t.retryMs;t.retryMs=Math.min(t.retryMs*2,Je),t.retryTimer=setTimeout(()=>{t.retryTimer=null,io(e)},Math.max(o,bt))},fo=ht({init:e=>Zn(e,Pt,xs,!0).map(n=>{let t=kt.register(n,()=>Qn(n,o=>{let[s,i,r,f]=Te(o);if(s!==eo){let c=`${Z}: relay failure from ${t.url} - `,d=s==="CLOSED"&&typeof r=="string"?r:f,v=s==="OK"&&r===!1,y=(v||s==="CLOSED")&&d?.startsWith("rate-limited:"),h=v&&d?.startsWith("duplicate:"),R=d&&/^(blocked|restricted|auth-required|pow):/.test(d);if(s==="OK"&&r===!0&&yn(t)===0&&mn.delete(t),(v||s==="CLOSED")&&R&&!zs(t))return;if(y)Ns(t);else if(s==="EOSE"){let P=me[t.url];P?.pendingEose.delete(i)&&P.pendingEose.size===0&&(P.retryMs=bt,P.retryTimer!==null&&(clearTimeout(P.retryTimer),P.retryTimer=null),Date.now()-P.requestedAt>=1e3&&ao(t))}s==="CLOSED"&&!R&&lo(t,!!y),!h&&e.relayConfig?.warnOnRelayFailure!==!1&&(s==="NOTICE"?console.warn(c+i):(v||s==="CLOSED")&&console.warn(c+d));return}if(r&&typeof r=="object"&&"content"in r){let c=me[t.url];if(c?.subIds.includes(i)&&r.tags){let d=r.tags.find(v=>v[0]===Qr);d?.[1]&&c.topics.get(d[1])?.(d[1],r.content)}}},()=>io(t)));return t.ready}),subscribeTopic:(e,n,t,o)=>{let s=(r,f)=>{t(r,f)};$s(e,n,s);let i=()=>{me[e.url]?.topics.get(n)===s&&Fs(e,n)};return o.kind==="root"?Ws(e).then(()=>i):i},publishTopic:(e,n,t,{kind:o})=>{let s=typeof t=="string"?t:re(t);return o==="announce"&&(Un.forRelay(e)[n]=s),co(e,n,s,o==="announce")},unpublishTopic:(e,n)=>{delete Un.forRelay(e)[n]}}),uo=kt.getSockets,Pt=["0x-nostr-relay.fly.dev","bendernostur.duckdns.org:8443","cdn.satellite.earth","nos.lol","nostr.chaima.info","nostr.christiansass.de","nostr.rblb.it","nostr.red5d.dev","nostr.robosats.org","nostr.stakey.net","nostrcity-club.fly.dev","relay-dev.gulugulu.moe","relay.aarpia.com","relay.agentry.com","relay.bitmacro.cloud","relay.bullishbounty.com","relay.degmods.com","relay.flashapp.me","relay.grigic.org","relay.hackshed.dev","relay.kaleidoswap.com","relay.layer.systems","relay.nostr.blockhenge.com","relay.nostr.dev.br","relay.nostrmap.net","relay.novospes.com","relay.piazza.today","relay.routstr.com","testr.nymble.world"].map(e=>"wss://"+e);return ko(Ks);})();
+
+</script>
+<script>
+  /* Shows startup problems on screen instead of leaving the loading message up forever. */
+  (function () {
+    var loadFailed = false;
+    function show(msg) { var el = document.getElementById("boot-msg"); if (el) el.innerHTML = msg; }
+    window.addEventListener("error", function (e) {
+      if (e && e.target && e.target.tagName === "SCRIPT") { loadFailed = true; show("Couldn't download the app's components (" + e.target.src.split("/npm/")[1] + "). Connect to the internet once and reload; after that it works offline."); return; }
+      if (!window.__fbMissing) show("The app couldn't start: " + String((e && e.message) || "unknown error").replace(/</g, "&lt;") + ". Try updating your browser.");
+    }, true);
+  })();
+</script>
+<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.1.13/dist/index.global.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script>window.react = window.React; /* lucide-react's UMD build looks for a lowercase global */</script>
+<script src="https://cdn.jsdelivr.net/npm/lucide-react@0.460.0/dist/umd/lucide-react.min.js"></script>
+</head>
+<body>
+<div id="root"><div id="boot">
+  <p style="font-weight:600;font-size:16px;color:var(--fg);margin:0 0 8px">Opening Family Budget…</p>
+  <p id="boot-msg" style="margin:0 auto;max-width:34em;font-size:13.5px">If this message stays, your phone is probably showing a <b>preview</b> of the file, and previews don't run apps. Open the file in Chrome or Safari itself, or open it from a web address.</p>
+</div></div>
+
+<script>
+  if (!window.React || !window.ReactDOM || !window.LucideReact) {
+    window.__fbMissing = true;
+    document.getElementById("boot-msg").innerHTML = "Couldn't download the app's components. Connect to the internet and reload; after the first successful load it also works offline.";
+  }
+</script>
+<script>
+const {
+  useState,
+  useEffect,
+  useMemo,
+  useRef,
+  useCallback
+} = React;
+const {
+  Wallet,
+  PiggyBank,
+  TrendingUp,
+  TrendingDown,
+  Download,
+  Upload,
+  Plus,
+  Trash2,
+  X,
+  ChevronLeft,
+  ChevronRight,
+  Lock,
+  FileJson,
+  Copy,
+  ClipboardPaste,
+  Search,
+  Pencil,
+  Tags,
+  RefreshCw,
+  ShieldCheck,
+  AlertTriangle,
+  Check,
+  ArrowDownLeft,
+  ArrowUpRight,
+  Undo2,
+  Settings2,
+  Info,
+  Users,
+  Eye,
+  EyeOff,
+  Dices,
+  KeyRound,
+  Unplug,
+  PlugZap,
+  ChevronDown
+} = LucideReact;
+
+/* ---------- constants & storage ---------- */
+const STORAGE_KEY = "family-budget:v2";
+const LEGACY_KEY = "family-budget:v1";
+const SYNC_KEY = "family-budget:sync";
+const DEVICE_KEY = "family-budget:device";
+const APP_ID = "family-budget";
+const P2P_APP_ID = "family-budget-p2p-v2";
+const SCHEMA_VERSION = 2;
+const PBKDF2_ITERATIONS = 250000;
+const COLORS = ["#2d6cdf", "#1c9a6c", "#d9822b", "#c2417a", "#7a5cd6", "#0f9bb0", "#a8892a", "#d24b3c", "#5b7083"];
+const CURRENCIES = ["USD", "EUR", "GBP", "CAD", "AUD", "INR", "JPY", "CHF", "SEK", "NZD", "MXN", "BRL", "ZAR", "SGD"];
+const safeGet = k => {
+  try {
+    return localStorage.getItem(k);
+  } catch {
+    return null;
+  }
+};
+const safeSet = (k, v) => {
+  try {
+    localStorage.setItem(k, v);
+    return true;
+  } catch {
+    return false;
+  }
+};
+const uid = () => crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2);
+const DEVICE = safeGet(DEVICE_KEY) || (() => {
+  const id = uid().slice(0, 8);
+  safeSet(DEVICE_KEY, id);
+  return id;
+})();
+const todayISO = () => {
+  const d = new Date();
+  d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+  return d.toISOString().slice(0, 10);
+};
+const monthOf = iso => iso.slice(0, 7);
+const shiftMonth = (ym, delta) => {
+  const [y, m] = ym.split("-").map(Number);
+  const d = new Date(y, m - 1 + delta, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+};
+const monthLabel = ym => {
+  const [y, m] = ym.split("-").map(Number);
+  return new Date(y, m - 1, 1).toLocaleDateString(undefined, {
+    month: "long",
+    year: "numeric"
+  });
+};
+const dateLabel = iso => {
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric"
+  });
+};
+const round2 = n => Math.round(n * 100) / 100;
+function makeMoney(currency) {
+  let f;
+  try {
+    f = new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency
+    });
+  } catch {
+    f = new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency: "USD"
+    });
+  }
+  return n => f.format(n || 0);
+}
+
+/* ---------- conflict-free merge ----------
+   Every category and transaction is its own record, stamped with a logical clock (t) and the device that wrote it (by).
+   Deleting writes a tombstone instead of removing the record. Merging keeps, for each id, the record with the highest
+   (t, by), so two devices always end up identical no matter in which order changes arrive. Entries logged at the same
+   moment on two phones have different ids, so both are kept. */
+let lastStamp = 0;
+const MAX_FUTURE = 10 * 365 * 864e5;
+const stamp = () => lastStamp = Math.max(Date.now(), lastStamp + 1);
+const observe = t => {
+  if (t > lastStamp && t < Date.now() + MAX_FUTURE) lastStamp = t;
+};
+function winner(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+  if (a.t !== b.t) return a.t > b.t ? a : b;
+  if (a.by !== b.by) return a.by > b.by ? a : b;
+  return JSON.stringify(a) >= JSON.stringify(b) ? a : b;
+}
+const same = (a, b) => a === b || JSON.stringify(a) === JSON.stringify(b);
+function mergeState(s, d) {
+  if (!d) return s;
+  let out = s;
+  if (d.currency) {
+    observe(d.currency.t);
+    const w = winner(s.currency, d.currency);
+    if (!same(w, s.currency)) out = {
+      ...out,
+      currency: w
+    };
+  }
+  for (const kind of ["categories", "transactions"]) {
+    if (!d[kind]) continue;
+    let map = null;
+    for (const [id, rec] of Object.entries(d[kind])) {
+      observe(rec.t);
+      const cur = s[kind][id];
+      const w = winner(cur, rec);
+      if (!cur || !same(w, cur)) {
+        map = map || {
+          ...s[kind]
+        };
+        map[id] = w;
+      }
+    }
+    if (map) out = {
+      ...out,
+      [kind]: map
+    };
+  }
+  return out;
+}
+const live = map => Object.values(map).filter(r => !r.deleted);
+
+/* ---------- validation (localStorage, imports and every message from another device) ---------- */
+const cleanT = (t, fallback) => {
+  const n = Number(t);
+  return isFinite(n) && n > 0 && n < Date.now() + MAX_FUTURE ? n : fallback;
+};
+function cleanCategory(c, i, legacy) {
+  if (!c || typeof c !== "object") return null;
+  const base = {
+    id: String(c.id || uid()),
+    t: cleanT(c.t, 1),
+    by: typeof c.by === "string" ? c.by.slice(0, 40) : legacy
+  };
+  if (c.deleted === true) return {
+    ...base,
+    deleted: true
+  };
+  if (typeof c.name !== "string" || !c.name.trim()) return null;
+  const kind = c.kind === "income" ? "income" : "expense";
+  const budget = Math.max(0, Number(c.budget) || 0);
+  return {
+    ...base,
+    name: c.name.trim().slice(0, 60),
+    kind,
+    budget: kind === "expense" ? round2(budget) : 0,
+    color: /^#[0-9a-f]{6}$/i.test(c.color || "") ? c.color : COLORS[i % COLORS.length]
+  };
+}
+function cleanTx(t, i, legacy) {
+  if (!t || typeof t !== "object") return null;
+  const base = {
+    id: String(t.id || uid()),
+    t: cleanT(t.t, 1),
+    by: typeof t.by === "string" ? t.by.slice(0, 40) : legacy
+  };
+  if (t.deleted === true) return {
+    ...base,
+    deleted: true
+  };
+  if (t.type !== "income" && t.type !== "expense") return null;
+  const amount = Number(t.amount);
+  if (!isFinite(amount) || amount <= 0 || amount > 1e12) return null;
+  if (typeof t.date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(t.date)) return null;
+  const rec = {
+    ...base,
+    type: t.type,
+    amount: round2(amount),
+    date: t.date,
+    categoryId: t.categoryId ? String(t.categoryId) : null,
+    note: typeof t.note === "string" ? t.note.slice(0, 200) : ""
+  };
+  if (t.sample === true) rec.sample = true;
+  return rec;
+}
+function cleanMap(input, cleaner, legacy, label, strict) {
+  const list = Array.isArray(input) ? input : input && typeof input === "object" ? Object.values(input) : null;
+  if (!list) throw new Error(`The file is missing ${label}, so it isn't a Family Budget export.`);
+  const map = {};
+  list.forEach((r, i) => {
+    const c = cleaner(r, i, legacy);
+    if (!c) {
+      if (strict) throw new Error(`${label === "categories" ? "Category" : "Transaction"} ${i + 1} is damaged or incomplete.`);
+      return;
+    }
+    map[c.id] = winner(map[c.id], c);
+  });
+  return map;
+}
+function cleanCurrency(c, legacyValue) {
+  if (c && typeof c === "object" && CURRENCIES.includes(c.value)) return {
+    value: c.value,
+    t: cleanT(c.t, 1),
+    by: typeof c.by === "string" ? c.by : "legacy"
+  };
+  return {
+    value: CURRENCIES.includes(legacyValue) ? legacyValue : "USD",
+    t: 1,
+    by: "legacy"
+  };
+}
+// Accepts this app's v1 (arrays) and v2 (record maps) formats.
+function validateBudget(raw, {
+  strict = true
+} = {}) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("The file doesn't contain budget data.");
+  if (raw.app && raw.app !== APP_ID) throw new Error("This file was made by a different app.");
+  if (typeof raw.version === "number" && raw.version > SCHEMA_VERSION) throw new Error("This file comes from a newer version of the app. Ask your partner to send you their copy of the HTML file.");
+  return {
+    app: APP_ID,
+    version: SCHEMA_VERSION,
+    currency: cleanCurrency(raw.currency, raw.currency),
+    categories: cleanMap(raw.categories, cleanCategory, "legacy", "categories", strict),
+    transactions: cleanMap(raw.transactions, cleanTx, "legacy", "transactions", strict),
+    isSample: !!raw.isSample
+  };
+}
+// Messages from other devices: drop anything malformed instead of failing.
+function cleanDelta(d) {
+  if (!d || typeof d !== "object") return null;
+  const out = {};
+  if (d.currency) out.currency = cleanCurrency(d.currency, null);
+  if (d.categories) out.categories = cleanMap(d.categories, cleanCategory, "peer", "categories", false);
+  if (d.transactions) out.transactions = cleanMap(d.transactions, cleanTx, "peer", "transactions", false);
+  return out;
+}
+
+/* ---------- starting data ---------- */
+// Default categories have fixed ids so two fresh devices don't end up with duplicate "Rent" categories after syncing.
+function defaultCategories() {
+  const list = [["cat-rent", "Rent", "expense", 1800, COLORS[0]], ["cat-groceries", "Groceries", "expense", 650, COLORS[1]], ["cat-utilities", "Utilities", "expense", 220, COLORS[2]], ["cat-transport", "Transport", "expense", 180, COLORS[5]], ["cat-dining", "Dining out", "expense", 200, COLORS[3]], ["cat-salary", "Salary", "income", 0, COLORS[4]], ["cat-other-income", "Other income", "income", 0, COLORS[8]]];
+  return Object.fromEntries(list.map(([id, name, kind, budget, color]) => [id, {
+    id,
+    name,
+    kind,
+    budget,
+    color,
+    t: 1,
+    by: "default"
+  }]));
+}
+function emptyState() {
+  return {
+    app: APP_ID,
+    version: SCHEMA_VERSION,
+    currency: {
+      value: "USD",
+      t: 1,
+      by: "default"
+    },
+    categories: defaultCategories(),
+    transactions: {},
+    isSample: false
+  };
+}
+function sampleState() {
+  const s = emptyState();
+  const ym = monthOf(todayISO());
+  const day = d => `${ym}-${String(Math.min(d, Number(todayISO().slice(8)))).padStart(2, "0")}`;
+  const rows = [["income", 4200, 1, "cat-salary", "Paycheck"], ["income", 1350, 1, "cat-salary", "Partner paycheck"], ["expense", 1800, 1, "cat-rent", "Monthly rent"], ["expense", 142.37, 3, "cat-groceries", "Weekly shop"], ["expense", 88.9, 4, "cat-utilities", "Electricity"], ["expense", 64.5, 5, "cat-dining", "Pizza night"], ["expense", 58.2, 6, "cat-transport", "Fuel"], ["expense", 167.05, 9, "cat-groceries", "Weekly shop"], ["income", 240, 10, "cat-other-income", "Sold old bike"], ["expense", 74.99, 11, "cat-utilities", "Internet"], ["expense", 92.4, 12, "cat-dining", "Birthday dinner"]];
+  rows.forEach(([type, amount, d, categoryId, note]) => {
+    const id = uid();
+    s.transactions[id] = {
+      id,
+      t: 1,
+      by: "sample",
+      type,
+      amount,
+      date: day(d),
+      categoryId,
+      note,
+      sample: true
+    };
+  });
+  s.isSample = true;
+  return s;
+}
+// Example rows are never sent to other devices; they're removed before sync starts.
+function clearSample(s) {
+  const transactions = Object.fromEntries(Object.entries(s.transactions).filter(([, t]) => !t.sample));
+  return {
+    ...s,
+    transactions,
+    isSample: false
+  };
+}
+function loadState() {
+  const txt = safeGet(STORAGE_KEY);
+  if (txt) {
+    try {
+      return validateBudget(JSON.parse(txt), {
+        strict: false
+      });
+    } catch (e) {
+      console.warn("Could not read saved budget", e);
+    }
+  }
+  const old = safeGet(LEGACY_KEY);
+  if (old) {
+    try {
+      return {
+        ...validateBudget(JSON.parse(old), {
+          strict: false
+        }),
+        isSample: false
+      };
+    } catch (e) {
+      console.warn("Could not read the older saved budget", e);
+    }
+  }
+  return sampleState();
+}
+function exportable(s) {
+  return {
+    app: APP_ID,
+    version: SCHEMA_VERSION,
+    currency: s.currency,
+    categories: s.categories,
+    transactions: clearSample(s).transactions,
+    exportedAt: new Date().toISOString()
+  };
+}
+function latestChange(s) {
+  let t = s.currency.t;
+  for (const kind of ["categories", "transactions"]) for (const r of Object.values(s[kind])) if (r.t > t) t = r.t;
+  return t > 1 ? new Date(t) : null;
+}
+
+/* ---------- encryption (Web Crypto: AES-256-GCM, key from a passphrase via PBKDF2) ---------- */
+const cryptoOK = !!(window.crypto && crypto.subtle && window.isSecureContext !== false);
+const enc = new TextEncoder(),
+  dec = new TextDecoder();
+const toB64 = buf => {
+  const b = new Uint8Array(buf);
+  let s = "";
+  for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000));
+  return btoa(s);
+};
+const fromB64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+async function deriveKey(pass, salt, iterations) {
+  const base = await crypto.subtle.importKey("raw", enc.encode(pass), "PBKDF2", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey({
+    name: "PBKDF2",
+    salt,
+    iterations,
+    hash: "SHA-256"
+  }, base, {
+    name: "AES-GCM",
+    length: 256
+  }, false, ["encrypt", "decrypt"]);
+}
+async function encryptText(text, pass) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await deriveKey(pass, salt, PBKDF2_ITERATIONS);
+  const data = await crypto.subtle.encrypt({
+    name: "AES-GCM",
+    iv
+  }, key, enc.encode(text));
+  return {
+    app: APP_ID,
+    encrypted: true,
+    version: 1,
+    cipher: "AES-256-GCM",
+    kdf: "PBKDF2-SHA256",
+    iterations: PBKDF2_ITERATIONS,
+    salt: toB64(salt),
+    iv: toB64(iv),
+    data: toB64(data)
+  };
+}
+async function decryptEnvelope(env, pass) {
+  const key = await deriveKey(pass, fromB64(env.salt), Number(env.iterations) || PBKDF2_ITERATIONS);
+  try {
+    return dec.decode(await crypto.subtle.decrypt({
+      name: "AES-GCM",
+      iv: fromB64(env.iv)
+    }, key, fromB64(env.data)));
+  } catch {
+    throw new Error("That passphrase didn't unlock the file. Check it with your partner and try again.");
+  }
+}
+const isEnvelope = o => o && o.encrypted === true && typeof o.data === "string" && typeof o.salt === "string" && typeof o.iv === "string";
+
+// Sync key: everyone with the same Room ID and password derives the same key; nobody else can read the payloads.
+const syncKey = (roomId, password) => deriveKey(`${roomId}\u0000${password}`, enc.encode(`family-budget-sync-v2|${roomId}`), 200000);
+async function seal(key, obj) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({
+    name: "AES-GCM",
+    iv
+  }, key, enc.encode(JSON.stringify(obj)));
+  return {
+    v: 2,
+    iv: toB64(iv),
+    ct: toB64(ct)
+  };
+}
+async function unseal(key, msg) {
+  if (!msg || typeof msg.iv !== "string" || typeof msg.ct !== "string") throw new Error("bad message");
+  return JSON.parse(dec.decode(await crypto.subtle.decrypt({
+    name: "AES-GCM",
+    iv: fromB64(msg.iv)
+  }, key, fromB64(msg.ct))));
+}
+async function digestOf(s) {
+  const parts = [`c:${s.currency.value}:${s.currency.t}:${s.currency.by}`];
+  for (const kind of ["categories", "transactions"]) {
+    const ids = Object.keys(s[kind]).sort();
+    for (const id of ids) {
+      const r = s[kind][id];
+      if (!r.sample) parts.push(`${kind[0]}:${id}:${r.t}:${r.by}:${r.deleted ? 1 : 0}`);
+    }
+  }
+  return toB64(await crypto.subtle.digest("SHA-256", enc.encode(parts.join("\n")))).slice(0, 22);
+}
+function downloadText(filename, text) {
+  const blob = new Blob([text], {
+    type: "application/json"
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+/* ---------- peer-to-peer sync engine ----------
+   Devices find each other through public Nostr relays (Trystero), which only ever see a hashed room name and
+   connection offers encrypted with the room password. Budget data then flows directly between devices over
+   WebRTC, sealed again with AES-GCM using the room key. Protocol:
+     join   -> both sides send their full record set
+     edit   -> the changed records are sent to every connected device
+     digest -> after any change each side sends a hash of its records; a mismatch triggers another full send,
+               a match marks that device "synced". */
+class SyncEngine {
+  constructor(hooks) {
+    this.hooks = hooks; // { getState, applyRemote, onStatus }
+    this.gen = 0;
+    this.room = null;
+    this.action = null;
+    this.key = null;
+    this.peers = new Map();
+    this.timers = {};
+    this.status = {
+      phase: "off",
+      peers: 0,
+      error: ""
+    };
+    this.refresh = this.refresh.bind(this);
+  }
+  set(patch) {
+    this.status = {
+      ...this.status,
+      ...patch
+    };
+    this.hooks.onStatus(this.status);
+  }
+  async start(roomId, password) {
+    this.stop();
+    const gen = ++this.gen;
+    this.startedAt = Date.now();
+    this.set({
+      phase: "connecting",
+      peers: 0,
+      error: ""
+    });
+    if (!window.Trystero) return this.set({
+      phase: "error",
+      error: "The sync component didn't load. Reload the page."
+    });
+    if (!cryptoOK) return this.set({
+      phase: "error",
+      error: "This browser view can't encrypt data, so sync is off. Open the file directly in Chrome, Edge, Firefox or Safari."
+    });
+    try {
+      const key = await syncKey(roomId, password);
+      if (gen !== this.gen) return;
+      this.key = key;
+      const relayConfig = Array.isArray(window.FAMILY_BUDGET_RELAYS) ? {
+        urls: window.FAMILY_BUDGET_RELAYS
+      } : {
+        redundancy: 5,
+        warnOnRelayFailure: false
+      };
+      const room = Trystero.joinRoom({
+        appId: P2P_APP_ID,
+        password: `${roomId}\u0000${password}`,
+        relayConfig
+      }, roomId);
+      this.room = room;
+      const action = room.makeAction("budget");
+      this.action = action;
+      action.onMessage = (msg, meta) => this.receive(msg, typeof meta === "string" ? meta : meta && meta.peerId, gen);
+      room.onPeerJoin = p => {
+        if (gen !== this.gen) return;
+        this.peers.set(p, {
+          synced: false
+        });
+        this.refresh();
+        this.sendFull(p);
+      };
+      room.onPeerLeave = p => {
+        this.peers.delete(p);
+        this.refresh();
+      };
+      this.timers.poll = setInterval(this.refresh, 1500);
+      window.addEventListener("online", this.refresh);
+      window.addEventListener("offline", this.refresh);
+      this.refresh();
+    } catch (e) {
+      console.error(e);
+      if (gen === this.gen) this.set({
+        phase: "error",
+        error: "Sync couldn't start. Check the Room ID and try again."
+      });
+    }
+  }
+  stop() {
+    this.gen++;
+    clearInterval(this.timers.poll);
+    Object.values(this.timers).forEach(clearTimeout);
+    this.timers = {};
+    window.removeEventListener("online", this.refresh);
+    window.removeEventListener("offline", this.refresh);
+    if (this.room) {
+      try {
+        this.room.leave();
+      } catch {}
+    }
+    this.room = null;
+    this.action = null;
+    this.key = null;
+    this.peers.clear();
+    this.set({
+      phase: "off",
+      peers: 0,
+      error: ""
+    });
+  }
+  relaysUp() {
+    try {
+      return Object.values(Trystero.getRelaySockets()).some(ws => ws && ws.readyState === 1);
+    } catch {
+      return false;
+    }
+  }
+  refresh() {
+    if (!this.room) return;
+    const n = this.peers.size;
+    let phase;
+    if (n > 0) phase = [...this.peers.values()].every(p => p.synced) ? "synced" : "syncing";else if (navigator.onLine === false) phase = "offline";else if (this.relaysUp()) phase = "waiting";else phase = Date.now() - this.startedAt < 10000 ? "connecting" : "offline";
+    if (phase !== this.status.phase || n !== this.status.peers) this.set({
+      phase,
+      peers: n
+    });
+  }
+  async send(kind, data, target) {
+    if (!this.action || !this.key) return;
+    try {
+      const sealed = await seal(this.key, {
+        k: kind,
+        d: data
+      });
+      if (this.action) await this.action.send(sealed, target ? {
+        target
+      } : undefined);
+    } catch (e) {
+      console.warn("Sync send failed", e);
+    }
+  }
+  sendFull(peer) {
+    const s = this.hooks.getState();
+    this.send("full", {
+      currency: s.currency,
+      categories: s.categories,
+      transactions: clearSample(s).transactions
+    }, peer);
+  }
+  broadcast(delta) {
+    if (!this.room || !this.peers.size) return;
+    this.peers.forEach(p => p.synced = false);
+    this.refresh();
+    this.send("delta", delta);
+    this.scheduleDigest();
+  }
+  scheduleDigest() {
+    clearTimeout(this.timers.digest);
+    this.timers.digest = setTimeout(async () => {
+      if (!this.peers.size) return;
+      this.send("digest", await digestOf(this.hooks.getState()));
+    }, 500);
+  }
+  async receive(msg, peerId, gen) {
+    if (gen !== this.gen || !this.key || !peerId) return;
+    let m;
+    try {
+      m = await unseal(this.key, msg);
+    } catch {
+      this.set({
+        error: "A device in this room sent data this device can't unlock. Check that both use the same password."
+      });
+      return;
+    }
+    if (gen !== this.gen) return;
+    if (!this.peers.has(peerId)) this.peers.set(peerId, {
+      synced: false
+    });
+    const peer = this.peers.get(peerId);
+    if (m.k === "full" || m.k === "delta") {
+      const d = cleanDelta(m.d);
+      if (d) this.hooks.applyRemote(d);
+      this.scheduleDigest();
+    } else if (m.k === "digest" && typeof m.d === "string") {
+      const mine = await digestOf(this.hooks.getState());
+      if (mine === m.d) {
+        // Tell the other side once, so it can mark us as synced too.
+        if (!peer.synced) {
+          peer.synced = true;
+          this.send("digest", mine, peerId);
+        }
+      } else {
+        peer.synced = false;
+        clearTimeout(this.timers["full:" + peerId]);
+        this.timers["full:" + peerId] = setTimeout(() => this.sendFull(peerId), 400);
+      }
+      this.refresh();
+    }
+  }
+}
+function loadSyncSettings() {
+  try {
+    const s = JSON.parse(safeGet(SYNC_KEY) || "{}");
+    return {
+      roomId: String(s.roomId || ""),
+      password: String(s.password || ""),
+      enabled: !!s.enabled && !!s.roomId
+    };
+  } catch {
+    return {
+      roomId: "",
+      password: "",
+      enabled: false
+    };
+  }
+}
+function generateRoomId() {
+  const alphabet = "abcdefghjkmnpqrstuvwxyz23456789";
+  const bytes = crypto.getRandomValues(new Uint8Array(20));
+  const chars = [...bytes].map(b => alphabet[b % alphabet.length]).join("");
+  return chars.match(/.{5}/g).join("-");
+}
+
+/* ---------- small UI pieces ---------- */
+function Modal({
+  title,
+  icon: Icon,
+  onClose,
+  children
+}) {
+  useEffect(() => {
+    const k = e => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", k);
+    return () => window.removeEventListener("keydown", k);
+  }, [onClose]);
+  return /*#__PURE__*/React.createElement("div", {
+    className: "scrim",
+    onMouseDown: e => e.target === e.currentTarget && onClose()
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "sheet",
+    role: "dialog",
+    "aria-modal": "true",
+    "aria-label": title
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center justify-between gap-3 mb-4"
+  }, /*#__PURE__*/React.createElement("h2", {
+    className: "text-lg font-bold flex items-center gap-2 m-0"
+  }, Icon && /*#__PURE__*/React.createElement(Icon, {
+    size: 20,
+    style: {
+      color: "var(--accent)"
+    }
+  }), title), /*#__PURE__*/React.createElement("button", {
+    className: "icon-btn",
+    onClick: onClose,
+    "aria-label": "Close"
+  }, /*#__PURE__*/React.createElement(X, {
+    size: 18
+  }))), children));
+}
+function Notice({
+  tone = "info",
+  children
+}) {
+  const map = {
+    info: ["var(--accent-soft)", "var(--accent)", Info],
+    warn: ["var(--warn-soft)", "var(--warn)", AlertTriangle],
+    danger: ["var(--danger-soft)", "var(--danger)", AlertTriangle],
+    ok: ["var(--income-soft)", "var(--income)", Check]
+  };
+  const [bg, fg, Ic] = map[tone];
+  return /*#__PURE__*/React.createElement("div", {
+    className: "flex gap-2 items-start rounded-[10px] px-3 py-2.5 text-[13.5px]",
+    style: {
+      background: bg
+    }
+  }, /*#__PURE__*/React.createElement(Ic, {
+    size: 16,
+    style: {
+      color: fg,
+      flexShrink: 0,
+      marginTop: 2
+    }
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "min-w-0"
+  }, children));
+}
+function StatCard({
+  label,
+  value,
+  sub,
+  icon: Icon,
+  tone
+}) {
+  return /*#__PURE__*/React.createElement("div", {
+    className: "panel p-4 sm:p-5 flex flex-col gap-2 min-w-0"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center justify-between gap-2"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "label"
+  }, label), /*#__PURE__*/React.createElement("span", {
+    className: "grid place-items-center w-8 h-8 rounded-full",
+    style: {
+      background: `var(--${tone}-soft)`,
+      color: `var(--${tone})`
+    }
+  }, /*#__PURE__*/React.createElement(Icon, {
+    size: 17
+  }))), /*#__PURE__*/React.createElement("div", {
+    className: "num text-[26px] sm:text-[30px] font-semibold leading-tight truncate",
+    style: {
+      color: tone === "accent" ? "var(--fg)" : `var(--${tone})`
+    }
+  }, value), /*#__PURE__*/React.createElement("div", {
+    className: "text-[13px]",
+    style: {
+      color: "var(--muted)"
+    }
+  }, sub));
+}
+
+/* ---------- sync status & settings ---------- */
+const PHASES = {
+  off: {
+    color: "var(--muted)",
+    label: "Sync off",
+    detail: "Enter a Secret Household Room ID below to sync automatically."
+  },
+  connecting: {
+    color: "var(--warn)",
+    label: "Connecting…",
+    detail: "Looking for the other devices in your room."
+  },
+  waiting: {
+    color: "var(--warn)",
+    label: "Online, waiting for other devices",
+    detail: "Changes will sync as soon as another device in this room opens the app."
+  },
+  syncing: {
+    color: "var(--income)",
+    label: "Syncing…",
+    detail: "Exchanging changes with your other devices."
+  },
+  synced: {
+    color: "var(--income)",
+    label: "Connected & Synced",
+    detail: "Every connected device has the same budget."
+  },
+  offline: {
+    color: "var(--danger)",
+    label: "Offline (Changes will sync when reconnected)",
+    detail: "Keep using the app. Your changes are saved here and will sync when the connection is back."
+  },
+  error: {
+    color: "var(--danger)",
+    label: "Sync problem",
+    detail: ""
+  }
+};
+function SyncDot({
+  status,
+  onClick
+}) {
+  const p = PHASES[status.phase] || PHASES.off;
+  const live = status.phase === "syncing" || status.phase === "connecting";
+  const short = status.phase === "offline" ? "Offline" : status.phase === "waiting" ? "Waiting for devices" : p.label;
+  return /*#__PURE__*/React.createElement("button", {
+    className: "sync-pill",
+    onClick: onClick,
+    "aria-label": `Sync status: ${p.label}`,
+    title: p.label
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "dot" + (live ? " dot-live" : ""),
+    style: {
+      background: p.color
+    }
+  }), /*#__PURE__*/React.createElement("span", null, short), status.peers > 0 && /*#__PURE__*/React.createElement("span", {
+    className: "num",
+    style: {
+      color: "var(--muted)"
+    }
+  }, "\xB7 ", status.peers));
+}
+function SyncSettings({
+  settings,
+  setSettings,
+  status,
+  open,
+  setOpen,
+  notify
+}) {
+  const [roomId, setRoomId] = useState(settings.roomId);
+  const [password, setPassword] = useState(settings.password);
+  const [show, setShow] = useState(false);
+  const [err, setErr] = useState("");
+  useEffect(() => {
+    setRoomId(settings.roomId);
+    setPassword(settings.password);
+  }, [settings.roomId, settings.password]);
+  const p = PHASES[status.phase] || PHASES.off;
+  const connected = settings.enabled;
+  const dirty = roomId.trim() !== settings.roomId || password !== settings.password;
+  const connect = () => {
+    const r = roomId.trim();
+    if (r.length < 8) return setErr("Use a Room ID of at least 8 characters, or press Generate.");
+    setErr("");
+    setSettings({
+      roomId: r,
+      password,
+      enabled: true
+    });
+    setOpen(false);
+  };
+  const disconnect = () => {
+    setSettings({
+      ...settings,
+      enabled: false
+    });
+    notify("Sync turned off on this device.");
+  };
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(roomId);
+      notify("Room ID copied.");
+    } catch {
+      document.getElementById("sync-room")?.select();
+      notify("Select the Room ID and copy it.");
+    }
+  };
+  return /*#__PURE__*/React.createElement("section", {
+    className: "panel overflow-hidden",
+    "aria-label": "Sync Settings"
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "w-full flex items-center gap-3 p-4 text-left bg-transparent border-0 cursor-pointer",
+    style: {
+      color: "var(--fg)"
+    },
+    onClick: () => setOpen(!open),
+    "aria-expanded": open
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "dot dot-lg" + (status.phase === "syncing" || status.phase === "connecting" ? " dot-live" : ""),
+    style: {
+      background: p.color
+    }
+  }), /*#__PURE__*/React.createElement("span", {
+    className: "flex-1 min-w-0"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "block font-semibold"
+  }, p.label, status.peers > 0 ? ` · ${status.peers} other ${status.peers === 1 ? "device" : "devices"}` : ""), /*#__PURE__*/React.createElement("span", {
+    className: "block text-[13px]",
+    style: {
+      color: "var(--muted)"
+    }
+  }, status.error || p.detail)), /*#__PURE__*/React.createElement("span", {
+    className: "label hidden sm:inline"
+  }, "Sync Settings"), /*#__PURE__*/React.createElement(ChevronDown, {
+    size: 18,
+    style: {
+      color: "var(--muted)",
+      transform: open ? "rotate(180deg)" : "none",
+      transition: "transform .2s"
+    }
+  })), open && /*#__PURE__*/React.createElement("div", {
+    className: "px-4 pb-4 flex flex-col gap-3 border-t pt-4",
+    style: {
+      borderColor: "var(--line)"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "grid sm:grid-cols-2 gap-3"
+  }, /*#__PURE__*/React.createElement("label", {
+    className: "flex flex-col gap-1.5 min-w-0"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "label"
+  }, "Secret Household Room ID"), /*#__PURE__*/React.createElement("div", {
+    className: "flex gap-2"
+  }, /*#__PURE__*/React.createElement("input", {
+    id: "sync-room",
+    className: "field num",
+    value: roomId,
+    onChange: e => setRoomId(e.target.value),
+    placeholder: "e.g. 7kq2m-xw9rt-\u2026",
+    autoComplete: "off",
+    autoCapitalize: "off",
+    spellCheck: "false"
+  }), /*#__PURE__*/React.createElement("button", {
+    className: "icon-btn shrink-0 self-center",
+    onClick: () => setRoomId(generateRoomId()),
+    "aria-label": "Generate a random Room ID",
+    title: "Generate"
+  }, /*#__PURE__*/React.createElement(Dices, {
+    size: 17
+  })), /*#__PURE__*/React.createElement("button", {
+    className: "icon-btn shrink-0 self-center",
+    onClick: copy,
+    disabled: !roomId,
+    "aria-label": "Copy Room ID",
+    title: "Copy"
+  }, /*#__PURE__*/React.createElement(Copy, {
+    size: 16
+  })))), /*#__PURE__*/React.createElement("label", {
+    className: "flex flex-col gap-1.5 min-w-0"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "label"
+  }, "Password (optional)"), /*#__PURE__*/React.createElement("div", {
+    className: "flex gap-2"
+  }, /*#__PURE__*/React.createElement("input", {
+    id: "sync-pass",
+    className: "field",
+    type: show ? "text" : "password",
+    value: password,
+    onChange: e => setPassword(e.target.value),
+    placeholder: "Same on every device",
+    autoComplete: "off"
+  }), /*#__PURE__*/React.createElement("button", {
+    className: "icon-btn shrink-0 self-center",
+    onClick: () => setShow(!show),
+    "aria-label": show ? "Hide password" : "Show password"
+  }, show ? /*#__PURE__*/React.createElement(EyeOff, {
+    size: 17
+  }) : /*#__PURE__*/React.createElement(Eye, {
+    size: 17
+  }))))), roomId.trim() && roomId.trim().length < 14 && !password && /*#__PURE__*/React.createElement(Notice, {
+    tone: "warn"
+  }, "Short Room IDs are easier to guess. Press the dice to generate a long one, or add a password."), err && /*#__PURE__*/React.createElement(Notice, {
+    tone: "danger"
+  }, err), /*#__PURE__*/React.createElement("div", {
+    className: "flex flex-wrap gap-2 justify-end"
+  }, connected && /*#__PURE__*/React.createElement("button", {
+    className: "btn",
+    onClick: disconnect
+  }, /*#__PURE__*/React.createElement(Unplug, {
+    size: 16
+  }), "Turn off sync"), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-primary",
+    onClick: connect,
+    disabled: !roomId.trim() || connected && !dirty
+  }, /*#__PURE__*/React.createElement(PlugZap, {
+    size: 16
+  }), connected ? dirty ? "Reconnect with new settings" : "Connected" : "Connect")), /*#__PURE__*/React.createElement("div", {
+    className: "text-[12.5px] flex flex-col gap-1",
+    style: {
+      color: "var(--muted)"
+    }
+  }, /*#__PURE__*/React.createElement("p", {
+    className: "m-0 flex gap-1.5"
+  }, /*#__PURE__*/React.createElement(ShieldCheck, {
+    size: 14,
+    className: "shrink-0 mt-0.5",
+    style: {
+      color: "var(--income)"
+    }
+  }), "Your budget travels straight between your devices, encrypted with a key made from the Room ID and password. Public relays only help the devices find each other and never see your data."), /*#__PURE__*/React.createElement("p", {
+    className: "m-0 flex gap-1.5"
+  }, /*#__PURE__*/React.createElement(KeyRound, {
+    size: 14,
+    className: "shrink-0 mt-0.5"
+  }), "Type the same Room ID and password on each device. They're remembered on this device so it reconnects by itself."))));
+}
+
+/* ---------- export ---------- */
+function ExportModal({
+  state,
+  onClose,
+  notify
+}) {
+  const [mode, setMode] = useState(cryptoOK ? "encrypted" : "raw");
+  const [pass, setPass] = useState("");
+  const [pass2, setPass2] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [text, setText] = useState("");
+  const counts = {
+    tx: live(clearSample(state).transactions).length,
+    cats: live(state.categories).length
+  };
+  const build = async () => {
+    setErr("");
+    const json = JSON.stringify(exportable(state), null, 2);
+    if (mode === "raw") return json;
+    if (pass.length < 6) throw new Error("Use a passphrase of at least 6 characters.");
+    if (pass !== pass2) throw new Error("The two passphrases don't match.");
+    return JSON.stringify(await encryptText(json, pass), null, 2);
+  };
+  const run = async action => {
+    setBusy(true);
+    try {
+      const out = await build();
+      if (action === "download") {
+        downloadText(`family-budget-${todayISO()}${mode === "encrypted" ? ".encrypted" : ""}.json`, out);
+        notify("Backup downloaded.");
+        onClose();
+      } else {
+        setText(out);
+        try {
+          await navigator.clipboard.writeText(out);
+          notify("Backup copied.");
+        } catch {
+          notify("Select the text below and copy it.");
+        }
+      }
+    } catch (e) {
+      setErr(e.message);
+    }
+    setBusy(false);
+  };
+  return /*#__PURE__*/React.createElement(Modal, {
+    title: "Export data",
+    icon: Download,
+    onClose: onClose
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex flex-col gap-4"
+  }, /*#__PURE__*/React.createElement("p", {
+    className: "m-0 text-[14px]",
+    style: {
+      color: "var(--muted)"
+    }
+  }, "Saves ", counts.tx, " transactions and ", counts.cats, " categories to a .json file. Use it as a backup, or to sync by hand when automatic sync can't connect."), /*#__PURE__*/React.createElement("div", {
+    className: "seg",
+    role: "group",
+    "aria-label": "Export format"
+  }, /*#__PURE__*/React.createElement("button", {
+    "aria-pressed": mode === "encrypted",
+    onClick: () => setMode("encrypted"),
+    disabled: !cryptoOK
+  }, /*#__PURE__*/React.createElement(Lock, {
+    size: 15
+  }), "Encrypted"), /*#__PURE__*/React.createElement("button", {
+    "aria-pressed": mode === "raw",
+    onClick: () => setMode("raw")
+  }, /*#__PURE__*/React.createElement(FileJson, {
+    size: 15
+  }), "Plain JSON")), mode === "encrypted" ? /*#__PURE__*/React.createElement("div", {
+    className: "grid sm:grid-cols-2 gap-3"
+  }, /*#__PURE__*/React.createElement("label", {
+    className: "flex flex-col gap-1.5 min-w-0"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "label"
+  }, "Passphrase"), /*#__PURE__*/React.createElement("input", {
+    id: "exp-pass",
+    className: "field",
+    type: "password",
+    autoComplete: "new-password",
+    value: pass,
+    onChange: e => setPass(e.target.value),
+    placeholder: "Shared with your partner"
+  })), /*#__PURE__*/React.createElement("label", {
+    className: "flex flex-col gap-1.5 min-w-0"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "label"
+  }, "Repeat passphrase"), /*#__PURE__*/React.createElement("input", {
+    id: "exp-pass2",
+    className: "field",
+    type: "password",
+    autoComplete: "new-password",
+    value: pass2,
+    onChange: e => setPass2(e.target.value)
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "sm:col-span-2"
+  }, /*#__PURE__*/React.createElement(Notice, null, "Encrypted with AES-256 on this device. Without the passphrase nobody, including you, can open the file."))) : /*#__PURE__*/React.createElement(Notice, {
+    tone: "warn"
+  }, "Plain JSON is readable by anyone who gets the file. Use it for your own backups or a channel you trust."), !cryptoOK && /*#__PURE__*/React.createElement(Notice, {
+    tone: "warn"
+  }, "Encryption isn't available in this browser view. Open the HTML file directly in Chrome, Edge, Firefox or Safari to use it."), err && /*#__PURE__*/React.createElement(Notice, {
+    tone: "danger"
+  }, err), /*#__PURE__*/React.createElement("div", {
+    className: "flex flex-wrap gap-2 justify-end"
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "btn",
+    onClick: () => run("copy"),
+    disabled: busy
+  }, /*#__PURE__*/React.createElement(Copy, {
+    size: 16
+  }), "Copy as text"), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-primary",
+    onClick: () => run("download"),
+    disabled: busy
+  }, /*#__PURE__*/React.createElement(Download, {
+    size: 16
+  }), "Download .json")), text && /*#__PURE__*/React.createElement("textarea", {
+    id: "exp-text",
+    className: "field num text-[12px] h-32",
+    readOnly: true,
+    value: text,
+    onFocus: e => e.target.select()
+  })));
+}
+
+/* ---------- import ---------- */
+// "Replace" has to win against the other devices too, so it writes fresh stamps: the backup's records are re-stamped
+// and anything not in the backup gets a tombstone.
+function replaceDelta(cur, backup) {
+  const d = {
+    currency: {
+      value: backup.currency.value,
+      t: stamp(),
+      by: DEVICE
+    },
+    categories: {},
+    transactions: {}
+  };
+  for (const kind of ["categories", "transactions"]) {
+    for (const [id, r] of Object.entries(cur[kind])) if (!backup[kind][id] && !r.deleted) d[kind][id] = {
+      id,
+      deleted: true,
+      t: stamp(),
+      by: DEVICE
+    };
+    for (const [id, r] of Object.entries(backup[kind])) {
+      const {
+        sample,
+        ...rest
+      } = r;
+      d[kind][id] = {
+        ...rest,
+        t: stamp(),
+        by: DEVICE
+      };
+    }
+  }
+  return d;
+}
+function ImportModal({
+  state,
+  onClose,
+  onApply,
+  syncing
+}) {
+  const [text, setText] = useState("");
+  const [fileName, setFileName] = useState("");
+  const [envelope, setEnvelope] = useState(null);
+  const [pass, setPass] = useState("");
+  const [parsed, setParsed] = useState(null);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const fileRef = useRef(null);
+  const analyze = raw => {
+    setErr("");
+    setParsed(null);
+    setEnvelope(null);
+    let obj;
+    try {
+      obj = JSON.parse(raw);
+    } catch {
+      setErr("This isn't valid JSON. Make sure you picked the exported .json file or pasted the whole text.");
+      return;
+    }
+    if (isEnvelope(obj)) {
+      if (!cryptoOK) {
+        setErr("This file is encrypted, and encryption isn't available in this browser view.");
+        return;
+      }
+      setEnvelope(obj);
+      return;
+    }
+    try {
+      setParsed(validateBudget(obj));
+    } catch (e) {
+      setErr(e.message);
+    }
+  };
+  const onFile = f => {
+    if (!f) return;
+    if (f.size > 20 * 1024 * 1024) {
+      setErr("That file is too large to be a budget export.");
+      return;
+    }
+    setFileName(f.name);
+    const r = new FileReader();
+    r.onload = () => {
+      setText(String(r.result));
+      analyze(String(r.result));
+    };
+    r.onerror = () => setErr("The file couldn't be read.");
+    r.readAsText(f);
+  };
+  const unlock = async () => {
+    setBusy(true);
+    setErr("");
+    try {
+      const plain = await decryptEnvelope(envelope, pass);
+      setParsed(validateBudget(JSON.parse(plain)));
+      setEnvelope(null);
+    } catch (e) {
+      setErr(e.message);
+    }
+    setBusy(false);
+  };
+  const fmt = d => d ? d.toLocaleString(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short"
+  }) : "no changes yet";
+  const mine = clearSample(state);
+  const newCount = parsed ? live(parsed.transactions).filter(t => !state.transactions[t.id]).length : 0;
+  return /*#__PURE__*/React.createElement(Modal, {
+    title: "Import data",
+    icon: Upload,
+    onClose: onClose
+  }, !parsed ? /*#__PURE__*/React.createElement("div", {
+    className: "flex flex-col gap-4"
+  }, /*#__PURE__*/React.createElement("p", {
+    className: "m-0 text-[14px]",
+    style: {
+      color: "var(--muted)"
+    }
+  }, "Load a backup file. You'll see what's in it before anything changes."), /*#__PURE__*/React.createElement("input", {
+    ref: fileRef,
+    id: "imp-file",
+    type: "file",
+    accept: ".json,application/json,text/plain",
+    className: "hidden",
+    onChange: e => onFile(e.target.files[0])
+  }), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-primary py-4",
+    onClick: () => fileRef.current.click(),
+    onDragOver: e => e.preventDefault(),
+    onDrop: e => {
+      e.preventDefault();
+      onFile(e.dataTransfer.files[0]);
+    }
+  }, /*#__PURE__*/React.createElement(Upload, {
+    size: 18
+  }), fileName ? `Chosen: ${fileName}` : "Choose .json file"), /*#__PURE__*/React.createElement("details", null, /*#__PURE__*/React.createElement("summary", {
+    className: "cursor-pointer text-[14px] font-semibold flex items-center gap-2",
+    style: {
+      color: "var(--accent)"
+    }
+  }, /*#__PURE__*/React.createElement(ClipboardPaste, {
+    size: 15
+  }), "Or paste the backup text"), /*#__PURE__*/React.createElement("div", {
+    className: "flex flex-col gap-2 mt-3"
+  }, /*#__PURE__*/React.createElement("textarea", {
+    id: "imp-text",
+    className: "field num text-[12px] h-32",
+    value: text,
+    onChange: e => setText(e.target.value),
+    placeholder: "{\"app\":\"family-budget\", \u2026}"
+  }), /*#__PURE__*/React.createElement("button", {
+    className: "btn self-end",
+    onClick: () => analyze(text),
+    disabled: !text.trim()
+  }, "Check text"))), envelope && /*#__PURE__*/React.createElement("div", {
+    className: "flex flex-col gap-2"
+  }, /*#__PURE__*/React.createElement(Notice, null, /*#__PURE__*/React.createElement("b", null, "This backup is encrypted."), " Enter its passphrase."), /*#__PURE__*/React.createElement("div", {
+    className: "flex gap-2"
+  }, /*#__PURE__*/React.createElement("input", {
+    id: "imp-pass",
+    className: "field",
+    type: "password",
+    autoComplete: "off",
+    value: pass,
+    onChange: e => setPass(e.target.value),
+    onKeyDown: e => e.key === "Enter" && pass && unlock(),
+    placeholder: "Passphrase",
+    autoFocus: true
+  }), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-primary",
+    onClick: unlock,
+    disabled: !pass || busy
+  }, /*#__PURE__*/React.createElement(Lock, {
+    size: 16
+  }), busy ? "Unlocking…" : "Unlock"))), err && /*#__PURE__*/React.createElement(Notice, {
+    tone: "danger"
+  }, err)) : /*#__PURE__*/React.createElement("div", {
+    className: "flex flex-col gap-4"
+  }, /*#__PURE__*/React.createElement(Notice, {
+    tone: "ok"
+  }, "The backup checks out. Choose how to bring it in."), /*#__PURE__*/React.createElement("div", {
+    className: "grid grid-cols-2 gap-3 text-[13.5px]"
+  }, [["On this device", mine], ["In the backup", parsed]].map(([t, s]) => /*#__PURE__*/React.createElement("div", {
+    key: t,
+    className: "rounded-[10px] p-3 min-w-0",
+    style: {
+      background: "var(--surface-2)"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "label mb-1"
+  }, t), /*#__PURE__*/React.createElement("div", {
+    className: "num font-semibold"
+  }, live(s.transactions).length, " entries"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: "var(--muted)"
+    }
+  }, live(s.categories).length, " categories"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: "var(--muted)"
+    }
+  }, "Last change ", fmt(latestChange(s)))))), /*#__PURE__*/React.createElement("div", {
+    className: "flex flex-col gap-2"
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "btn justify-start text-left py-3",
+    onClick: () => onApply(parsed, "merge")
+  }, /*#__PURE__*/React.createElement(Plus, {
+    size: 17
+  }), /*#__PURE__*/React.createElement("span", {
+    className: "flex flex-col whitespace-normal"
+  }, /*#__PURE__*/React.createElement("span", null, "Merge into my data"), /*#__PURE__*/React.createElement("span", {
+    className: "font-normal text-[12.5px]",
+    style: {
+      color: "var(--muted)"
+    }
+  }, "Adds ", newCount, " new ", newCount === 1 ? "entry" : "entries", " and keeps the newest version of everything else."))), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-danger justify-start text-left py-3",
+    onClick: () => onApply(parsed, "replace")
+  }, /*#__PURE__*/React.createElement(RefreshCw, {
+    size: 17
+  }), /*#__PURE__*/React.createElement("span", {
+    className: "flex flex-col whitespace-normal"
+  }, /*#__PURE__*/React.createElement("span", null, "Replace my data"), /*#__PURE__*/React.createElement("span", {
+    className: "font-normal text-[12.5px] opacity-90"
+  }, "Makes this budget an exact copy of the backup. Entries not in the backup are deleted", syncing ? ", on your synced devices too" : "", ".")))), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-ghost self-start",
+    onClick: () => setParsed(null)
+  }, /*#__PURE__*/React.createElement(ChevronLeft, {
+    size: 16
+  }), "Pick a different file")));
+}
+
+/* ---------- categories ---------- */
+function CategoryModal({
+  state,
+  commit,
+  onClose,
+  money
+}) {
+  const cats = live(state.categories);
+  const [editing, setEditing] = useState(null);
+  const blank = {
+    id: null,
+    name: "",
+    kind: "expense",
+    budget: "",
+    color: COLORS[cats.length % COLORS.length]
+  };
+  const [form, setForm] = useState(blank);
+  const [err, setErr] = useState("");
+  const [confirmDel, setConfirmDel] = useState(null);
+  const save = () => {
+    const name = form.name.trim();
+    if (!name) return setErr("Give the category a name.");
+    if (cats.some(c => c.id !== form.id && c.name.toLowerCase() === name.toLowerCase() && c.kind === form.kind)) return setErr("You already have a category with that name.");
+    const budget = form.kind === "expense" ? round2(Math.max(0, Number(form.budget) || 0)) : 0;
+    const id = form.id || uid();
+    commit({
+      categories: {
+        [id]: {
+          id,
+          name,
+          kind: form.kind,
+          budget,
+          color: form.color,
+          t: stamp(),
+          by: DEVICE
+        }
+      }
+    });
+    setForm({
+      ...blank,
+      color: COLORS[(cats.length + 1) % COLORS.length]
+    });
+    setEditing(null);
+    setErr("");
+  };
+  const remove = id => {
+    commit({
+      categories: {
+        [id]: {
+          id,
+          deleted: true,
+          t: stamp(),
+          by: DEVICE
+        }
+      }
+    });
+    setConfirmDel(null);
+  };
+  const used = id => live(state.transactions).filter(t => t.categoryId === id).length;
+  return /*#__PURE__*/React.createElement(Modal, {
+    title: "Categories & budgets",
+    icon: Tags,
+    onClose: onClose
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex flex-col gap-4"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "panel p-3 flex flex-col gap-3",
+    style: {
+      background: "var(--surface-2)"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "label"
+  }, editing ? "Edit category" : "New category"), /*#__PURE__*/React.createElement("div", {
+    className: "grid grid-cols-[1fr_auto] gap-2"
+  }, /*#__PURE__*/React.createElement("input", {
+    id: "cat-name",
+    className: "field",
+    value: form.name,
+    onChange: e => setForm({
+      ...form,
+      name: e.target.value
+    }),
+    placeholder: "e.g. Childcare",
+    maxLength: 60
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "seg",
+    role: "group",
+    "aria-label": "Category type"
+  }, /*#__PURE__*/React.createElement("button", {
+    "aria-pressed": form.kind === "expense",
+    onClick: () => setForm({
+      ...form,
+      kind: "expense"
+    })
+  }, "Expense"), /*#__PURE__*/React.createElement("button", {
+    "aria-pressed": form.kind === "income",
+    onClick: () => setForm({
+      ...form,
+      kind: "income"
+    })
+  }, "Income"))), form.kind === "expense" && /*#__PURE__*/React.createElement("label", {
+    className: "flex flex-col gap-1.5"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "label"
+  }, "Monthly budget"), /*#__PURE__*/React.createElement("input", {
+    id: "cat-budget",
+    className: "field num",
+    type: "text",
+    inputMode: "decimal",
+    pattern: "[0-9]*[.,]?[0-9]*",
+    autoComplete: "off",
+    value: form.budget,
+    onChange: e => setForm({
+      ...form,
+      budget: e.target.value
+    }),
+    placeholder: "0.00"
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "flex flex-wrap items-center gap-2",
+    role: "group",
+    "aria-label": "Color"
+  }, COLORS.map(c => /*#__PURE__*/React.createElement("button", {
+    key: c,
+    className: "swatch",
+    style: {
+      background: c
+    },
+    "aria-pressed": form.color === c,
+    "aria-label": `Color ${c}`,
+    onClick: () => setForm({
+      ...form,
+      color: c
+    })
+  }))), err && /*#__PURE__*/React.createElement(Notice, {
+    tone: "danger"
+  }, err), /*#__PURE__*/React.createElement("div", {
+    className: "flex gap-2 justify-end"
+  }, editing && /*#__PURE__*/React.createElement("button", {
+    className: "btn",
+    onClick: () => {
+      setEditing(null);
+      setForm(blank);
+      setErr("");
+    }
+  }, "Cancel"), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-primary",
+    onClick: save
+  }, editing ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(Check, {
+    size: 16
+  }), "Save") : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(Plus, {
+    size: 16
+  }), "Add category")))), ["expense", "income"].map(kind => /*#__PURE__*/React.createElement("div", {
+    key: kind,
+    className: "flex flex-col gap-1"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "label mb-1"
+  }, kind === "expense" ? "Spending" : "Income"), cats.filter(c => c.kind === kind).sort((a, b) => a.name.localeCompare(b.name)).map(c => /*#__PURE__*/React.createElement("div", {
+    key: c.id,
+    className: "flex items-center gap-3 py-1.5"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "w-3 h-3 rounded-full shrink-0",
+    style: {
+      background: c.color
+    }
+  }), /*#__PURE__*/React.createElement("span", {
+    className: "flex-1 min-w-0 truncate"
+  }, c.name), kind === "expense" && /*#__PURE__*/React.createElement("span", {
+    className: "num text-[13px]",
+    style: {
+      color: "var(--muted)"
+    }
+  }, c.budget ? `${money(c.budget)}/mo` : "No budget"), confirmDel === c.id ? /*#__PURE__*/React.createElement("span", {
+    className: "flex gap-1 items-center"
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-danger py-1 px-2 text-[13px]",
+    onClick: () => remove(c.id)
+  }, "Delete"), /*#__PURE__*/React.createElement("button", {
+    className: "btn py-1 px-2 text-[13px]",
+    onClick: () => setConfirmDel(null)
+  }, "Keep")) : /*#__PURE__*/React.createElement("span", {
+    className: "flex"
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "icon-btn",
+    "aria-label": `Edit ${c.name}`,
+    onClick: () => {
+      setEditing(c.id);
+      setForm({
+        ...c,
+        budget: c.budget || ""
+      });
+      setErr("");
+    }
+  }, /*#__PURE__*/React.createElement(Pencil, {
+    size: 15
+  })), /*#__PURE__*/React.createElement("button", {
+    className: "icon-btn",
+    "aria-label": `Delete ${c.name}`,
+    title: used(c.id) ? `${used(c.id)} entries will show as Uncategorized` : "Delete",
+    onClick: () => setConfirmDel(c.id)
+  }, /*#__PURE__*/React.createElement(Trash2, {
+    size: 15
+  })))))))));
+}
+
+/* ---------- add transaction ---------- */
+function AddTransaction({
+  categories,
+  onAdd,
+  money
+}) {
+  const [type, setType] = useState("expense");
+  const [amount, setAmount] = useState("");
+  const [date, setDate] = useState(todayISO());
+  const [note, setNote] = useState("");
+  const options = categories.filter(c => c.kind === type).sort((a, b) => a.name.localeCompare(b.name));
+  const [categoryId, setCategoryId] = useState("");
+  const [err, setErr] = useState("");
+  useEffect(() => {
+    if (!options.some(c => c.id === categoryId)) setCategoryId(options[0]?.id || "");
+  }, [type, categories]);
+  const submit = e => {
+    e.preventDefault();
+    const n = Number(amount.replace(",", "."));
+    if (!isFinite(n) || n <= 0) return setErr("Enter an amount greater than zero.");
+    if (!date) return setErr("Pick a date.");
+    onAdd({
+      id: uid(),
+      type,
+      amount: round2(n),
+      date,
+      categoryId: categoryId || null,
+      note: note.trim()
+    });
+    setAmount("");
+    setNote("");
+    setErr("");
+  };
+  return /*#__PURE__*/React.createElement("form", {
+    onSubmit: submit,
+    className: "panel p-4 sm:p-5 flex flex-col gap-3 min-w-0"
+  }, /*#__PURE__*/React.createElement("h2", {
+    className: "m-0 text-[17px] font-bold flex items-center gap-2"
+  }, /*#__PURE__*/React.createElement(Plus, {
+    size: 18,
+    style: {
+      color: "var(--accent)"
+    }
+  }), "Add entry"), /*#__PURE__*/React.createElement("div", {
+    className: "seg",
+    role: "group",
+    "aria-label": "Entry type"
+  }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    "aria-pressed": type === "expense",
+    onClick: () => setType("expense")
+  }, /*#__PURE__*/React.createElement(ArrowUpRight, {
+    size: 15,
+    style: {
+      color: "var(--expense)"
+    }
+  }), "Expense"), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    "aria-pressed": type === "income",
+    onClick: () => setType("income")
+  }, /*#__PURE__*/React.createElement(ArrowDownLeft, {
+    size: 15,
+    style: {
+      color: "var(--income)"
+    }
+  }), "Income")), /*#__PURE__*/React.createElement("div", {
+    className: "grid grid-cols-2 gap-3"
+  }, /*#__PURE__*/React.createElement("label", {
+    className: "flex flex-col gap-1.5 min-w-0"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "label"
+  }, "Amount"), /*#__PURE__*/React.createElement("input", {
+    id: "tx-amount",
+    className: "field num text-[17px]",
+    type: "text",
+    inputMode: "decimal",
+    pattern: "[0-9]*[.,]?[0-9]*",
+    autoComplete: "off",
+    value: amount,
+    onChange: e => setAmount(e.target.value),
+    placeholder: "0.00"
+  })), /*#__PURE__*/React.createElement("label", {
+    className: "flex flex-col gap-1.5 min-w-0"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "label"
+  }, "Date"), /*#__PURE__*/React.createElement("input", {
+    id: "tx-date",
+    className: "field",
+    type: "date",
+    value: date,
+    onChange: e => setDate(e.target.value)
+  }))), /*#__PURE__*/React.createElement("label", {
+    className: "flex flex-col gap-1.5"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "label"
+  }, "Category"), /*#__PURE__*/React.createElement("select", {
+    id: "tx-category",
+    className: "field",
+    value: categoryId,
+    onChange: e => setCategoryId(e.target.value)
+  }, options.map(c => /*#__PURE__*/React.createElement("option", {
+    key: c.id,
+    value: c.id
+  }, c.name)), /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "Uncategorized"))), /*#__PURE__*/React.createElement("label", {
+    className: "flex flex-col gap-1.5"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "label"
+  }, "Note"), /*#__PURE__*/React.createElement("input", {
+    id: "tx-note",
+    className: "field",
+    value: note,
+    onChange: e => setNote(e.target.value),
+    placeholder: type === "expense" ? "e.g. Weekly shop" : "e.g. Paycheck",
+    maxLength: 200
+  })), err && /*#__PURE__*/React.createElement(Notice, {
+    tone: "danger"
+  }, err), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-primary py-3",
+    type: "submit"
+  }, /*#__PURE__*/React.createElement(Plus, {
+    size: 17
+  }), "Add ", type, Number(amount) > 0 ? ` of ${money(Number(amount))}` : ""));
+}
+
+/* ---------- budget progress ---------- */
+function BudgetProgress({
+  categories,
+  monthTx,
+  money,
+  onManage
+}) {
+  const expenseCats = categories.filter(c => c.kind === "expense").sort((a, b) => b.budget - a.budget || a.name.localeCompare(b.name));
+  const known = new Set(expenseCats.map(c => c.id));
+  const rows = expenseCats.map(c => ({
+    ...c,
+    spent: round2(monthTx.filter(t => t.type === "expense" && t.categoryId === c.id).reduce((a, t) => a + t.amount, 0))
+  }));
+  const uncategorized = round2(monthTx.filter(t => t.type === "expense" && !known.has(t.categoryId)).reduce((a, t) => a + t.amount, 0));
+  const totalBudget = rows.reduce((a, r) => a + r.budget, 0);
+  const totalSpent = rows.reduce((a, r) => a + r.spent, 0) + uncategorized;
+  const pct = totalBudget ? Math.min(100, totalSpent / totalBudget * 100) : 0;
+  const status = (spent, budget) => {
+    const r = spent / budget;
+    if (r > 1) return /*#__PURE__*/React.createElement("span", {
+      className: "pill",
+      style: {
+        background: "var(--danger-soft)",
+        color: "var(--danger)"
+      }
+    }, "Over by ", money(spent - budget));
+    if (r >= 0.85) return /*#__PURE__*/React.createElement("span", {
+      className: "pill",
+      style: {
+        background: "var(--warn-soft)",
+        color: "var(--warn)"
+      }
+    }, money(budget - spent), " left");
+    return /*#__PURE__*/React.createElement("span", {
+      className: "text-[12.5px] num",
+      style: {
+        color: "var(--muted)"
+      }
+    }, money(budget - spent), " left");
+  };
+  return /*#__PURE__*/React.createElement("section", {
+    className: "panel p-4 sm:p-5 flex flex-col gap-4 min-w-0"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center justify-between gap-2"
+  }, /*#__PURE__*/React.createElement("h2", {
+    className: "m-0 text-[17px] font-bold flex items-center gap-2"
+  }, /*#__PURE__*/React.createElement(Wallet, {
+    size: 18,
+    style: {
+      color: "var(--accent)"
+    }
+  }), "Budget progress"), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-ghost px-2 py-1.5 text-[13px]",
+    onClick: onManage
+  }, /*#__PURE__*/React.createElement(Settings2, {
+    size: 15
+  }), "Edit budgets")), totalBudget > 0 && /*#__PURE__*/React.createElement("div", {
+    className: "flex flex-col gap-2 rounded-[12px] p-3",
+    style: {
+      background: "var(--surface-2)"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex justify-between items-baseline gap-2 flex-wrap"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "text-[14px] font-semibold"
+  }, "All spending"), /*#__PURE__*/React.createElement("span", {
+    className: "num text-[14px]"
+  }, /*#__PURE__*/React.createElement("b", null, money(totalSpent)), " ", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "var(--muted)"
+    }
+  }, "of ", money(totalBudget)))), /*#__PURE__*/React.createElement("div", {
+    className: "bar",
+    style: {
+      height: 10,
+      background: "var(--surface)"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      width: `${pct}%`,
+      background: totalSpent > totalBudget ? "var(--danger)" : "var(--accent)"
+    }
+  }))), /*#__PURE__*/React.createElement("div", {
+    className: "flex flex-col gap-4"
+  }, rows.map(r => {
+    const p = r.budget ? Math.min(100, r.spent / r.budget * 100) : 0;
+    const over = r.budget && r.spent > r.budget;
+    return /*#__PURE__*/React.createElement("div", {
+      key: r.id,
+      className: "flex flex-col gap-1.5"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "flex items-center gap-2 justify-between flex-wrap"
+    }, /*#__PURE__*/React.createElement("span", {
+      className: "flex items-center gap-2 min-w-0 font-medium"
+    }, /*#__PURE__*/React.createElement("span", {
+      className: "w-2.5 h-2.5 rounded-full shrink-0",
+      style: {
+        background: r.color
+      }
+    }), /*#__PURE__*/React.createElement("span", {
+      className: "truncate"
+    }, r.name)), /*#__PURE__*/React.createElement("span", {
+      className: "num text-[13.5px]"
+    }, money(r.spent), r.budget ? /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: "var(--muted)"
+      }
+    }, " / ", money(r.budget)) : null)), r.budget ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+      className: "bar",
+      role: "progressbar",
+      "aria-valuenow": Math.round(r.spent / r.budget * 100),
+      "aria-valuemin": "0",
+      "aria-valuemax": "100",
+      "aria-label": `${r.name} budget used`
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        width: `${p}%`,
+        background: over ? "var(--danger)" : r.color
+      }
+    })), /*#__PURE__*/React.createElement("div", {
+      className: "flex justify-between items-center"
+    }, /*#__PURE__*/React.createElement("span", {
+      className: "text-[12.5px] num",
+      style: {
+        color: "var(--muted)"
+      }
+    }, Math.round(r.spent / r.budget * 100), "% used"), status(r.spent, r.budget))) : /*#__PURE__*/React.createElement("button", {
+      className: "text-left text-[12.5px] p-0 bg-transparent border-0 cursor-pointer underline",
+      style: {
+        color: "var(--accent)"
+      },
+      onClick: onManage
+    }, "Set a monthly budget"));
+  }), uncategorized > 0 && /*#__PURE__*/React.createElement("div", {
+    className: "flex justify-between text-[13.5px]",
+    style: {
+      color: "var(--muted)"
+    }
+  }, /*#__PURE__*/React.createElement("span", null, "Uncategorized"), /*#__PURE__*/React.createElement("span", {
+    className: "num"
+  }, money(uncategorized))), !rows.length && /*#__PURE__*/React.createElement("p", {
+    className: "m-0 text-[14px]",
+    style: {
+      color: "var(--muted)"
+    }
+  }, "No spending categories yet. Add Groceries, Rent or anything you track.")));
+}
+
+/* ---------- transaction log ---------- */
+function TransactionLog({
+  transactions,
+  categories,
+  money,
+  onDelete,
+  scopeLabel,
+  showAll,
+  setShowAll
+}) {
+  const [q, setQ] = useState("");
+  const [filter, setFilter] = useState("all");
+  const catMap = useMemo(() => Object.fromEntries(categories.map(c => [c.id, c])), [categories]);
+  const list = useMemo(() => {
+    const s = q.trim().toLowerCase();
+    return transactions.filter(t => filter === "all" || t.type === filter).filter(t => !s || (t.note || "").toLowerCase().includes(s) || (catMap[t.categoryId]?.name || "uncategorized").toLowerCase().includes(s)).sort((a, b) => a.date < b.date ? 1 : a.date > b.date ? -1 : b.t - a.t);
+  }, [transactions, q, filter, catMap]);
+  const Cat = ({
+    t
+  }) => {
+    const c = catMap[t.categoryId];
+    return /*#__PURE__*/React.createElement("span", {
+      className: "inline-flex items-center gap-1.5 min-w-0"
+    }, /*#__PURE__*/React.createElement("span", {
+      className: "w-2 h-2 rounded-full shrink-0",
+      style: {
+        background: c?.color || "var(--muted)"
+      }
+    }), /*#__PURE__*/React.createElement("span", {
+      className: "truncate"
+    }, c?.name || "Uncategorized"));
+  };
+  const Amt = ({
+    t
+  }) => /*#__PURE__*/React.createElement("span", {
+    className: "num font-semibold whitespace-nowrap",
+    style: {
+      color: t.type === "income" ? "var(--income)" : "var(--fg)"
+    }
+  }, t.type === "income" ? "+" : "−", money(t.amount));
+  const fromOther = t => t.by !== DEVICE && t.by !== "sample" && t.by !== "legacy" && t.by !== "default";
+  return /*#__PURE__*/React.createElement("section", {
+    className: "panel min-w-0"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "p-4 sm:p-5 flex flex-col gap-3 border-b",
+    style: {
+      borderColor: "var(--line)"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center justify-between gap-2 flex-wrap"
+  }, /*#__PURE__*/React.createElement("h2", {
+    className: "m-0 text-[17px] font-bold"
+  }, "Transactions ", /*#__PURE__*/React.createElement("span", {
+    className: "font-normal text-[14px]",
+    style: {
+      color: "var(--muted)"
+    }
+  }, "\xB7 ", showAll ? "all time" : scopeLabel)), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-ghost px-2 py-1.5 text-[13px]",
+    onClick: () => setShowAll(!showAll)
+  }, showAll ? "Show this month" : "Show all months")), /*#__PURE__*/React.createElement("div", {
+    className: "flex gap-2 flex-wrap"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "relative flex-1 min-w-[180px]"
+  }, /*#__PURE__*/React.createElement(Search, {
+    size: 16,
+    className: "absolute left-3 top-1/2 -translate-y-1/2",
+    style: {
+      color: "var(--muted)"
+    }
+  }), /*#__PURE__*/React.createElement("input", {
+    id: "tx-search",
+    className: "field",
+    style: {
+      paddingLeft: 36
+    },
+    value: q,
+    onChange: e => setQ(e.target.value),
+    placeholder: "Search notes or categories"
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "seg",
+    role: "group",
+    "aria-label": "Filter"
+  }, [["all", "All"], ["income", "Income"], ["expense", "Expenses"]].map(([k, l]) => /*#__PURE__*/React.createElement("button", {
+    key: k,
+    "aria-pressed": filter === k,
+    onClick: () => setFilter(k)
+  }, l))))), !list.length ? /*#__PURE__*/React.createElement("p", {
+    className: "m-0 p-8 text-center text-[14px]",
+    style: {
+      color: "var(--muted)"
+    }
+  }, transactions.length ? "Nothing matches your search." : "No entries yet. Add your first income or expense above.") : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    className: "hidden sm:block overflow-x-auto"
+  }, /*#__PURE__*/React.createElement("table", {
+    className: "tbl"
+  }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", {
+    className: "label w-[110px]"
+  }, "Date"), /*#__PURE__*/React.createElement("th", {
+    className: "label"
+  }, "Category"), /*#__PURE__*/React.createElement("th", {
+    className: "label"
+  }, "Note"), /*#__PURE__*/React.createElement("th", {
+    className: "label text-right"
+  }, "Amount"), /*#__PURE__*/React.createElement("th", {
+    className: "w-[52px]"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "sr-only"
+  }, "Actions")))), /*#__PURE__*/React.createElement("tbody", null, list.map(t => /*#__PURE__*/React.createElement("tr", {
+    key: t.id
+  }, /*#__PURE__*/React.createElement("td", {
+    className: "num text-[13.5px] whitespace-nowrap",
+    style: {
+      color: "var(--muted)"
+    }
+  }, dateLabel(t.date), showAll ? ` ${t.date.slice(0, 4)}` : ""), /*#__PURE__*/React.createElement("td", {
+    className: "max-w-[200px]"
+  }, /*#__PURE__*/React.createElement(Cat, {
+    t: t
+  })), /*#__PURE__*/React.createElement("td", {
+    className: "max-w-[320px] truncate",
+    style: {
+      color: t.note ? "var(--fg)" : "var(--muted)"
+    }
+  }, t.note || "—", fromOther(t) && /*#__PURE__*/React.createElement("span", {
+    className: "tag-synced",
+    title: "Added on another device"
+  }, /*#__PURE__*/React.createElement(Users, {
+    size: 11
+  }))), /*#__PURE__*/React.createElement("td", {
+    className: "text-right"
+  }, /*#__PURE__*/React.createElement(Amt, {
+    t: t
+  })), /*#__PURE__*/React.createElement("td", {
+    className: "text-right"
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "icon-btn",
+    "aria-label": `Delete ${t.note || "entry"}`,
+    onClick: () => onDelete(t)
+  }, /*#__PURE__*/React.createElement(Trash2, {
+    size: 16
+  })))))))), /*#__PURE__*/React.createElement("ul", {
+    className: "sm:hidden m-0 p-0 list-none"
+  }, list.map(t => /*#__PURE__*/React.createElement("li", {
+    key: t.id,
+    className: "flex items-center gap-3 px-4 py-3 border-b last:border-b-0",
+    style: {
+      borderColor: "var(--line)"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "grid place-items-center w-9 h-9 rounded-full shrink-0",
+    style: {
+      background: t.type === "income" ? "var(--income-soft)" : "var(--expense-soft)",
+      color: t.type === "income" ? "var(--income)" : "var(--expense)"
+    }
+  }, t.type === "income" ? /*#__PURE__*/React.createElement(ArrowDownLeft, {
+    size: 17
+  }) : /*#__PURE__*/React.createElement(ArrowUpRight, {
+    size: 17
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "flex-1 min-w-0"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "truncate font-medium"
+  }, t.note || catMap[t.categoryId]?.name || "Uncategorized", fromOther(t) && /*#__PURE__*/React.createElement("span", {
+    className: "tag-synced",
+    title: "Added on another device"
+  }, /*#__PURE__*/React.createElement(Users, {
+    size: 11
+  }))), /*#__PURE__*/React.createElement("div", {
+    className: "text-[12.5px] flex gap-2 min-w-0",
+    style: {
+      color: "var(--muted)"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "num shrink-0"
+  }, dateLabel(t.date)), /*#__PURE__*/React.createElement(Cat, {
+    t: t
+  }))), /*#__PURE__*/React.createElement(Amt, {
+    t: t
+  }), /*#__PURE__*/React.createElement("button", {
+    className: "icon-btn -mr-2",
+    "aria-label": `Delete ${t.note || "entry"}`,
+    onClick: () => onDelete(t)
+  }, /*#__PURE__*/React.createElement(Trash2, {
+    size: 16
+  })))))));
+}
+
+/* ---------- app ---------- */
+function App() {
+  const [data, setData] = useState(loadState);
+  const dataRef = useRef(data);
+  const [month, setMonth] = useState(monthOf(todayISO()));
+  const [modal, setModal] = useState(null);
+  const [toast, setToast] = useState(null);
+  const [showAll, setShowAll] = useState(false);
+  const [saveError, setSaveError] = useState(false);
+  const [sync, setSync] = useState(loadSyncSettings);
+  const [syncStatus, setSyncStatus] = useState({
+    phase: "off",
+    peers: 0,
+    error: ""
+  });
+  const [syncOpen, setSyncOpen] = useState(() => !loadSyncSettings().enabled);
+  const engineRef = useRef(null);
+  const toastTimer = useRef(null);
+
+  // All changes, local or remote, go through here so dataRef is always current for the sync engine.
+  const apply = useCallback(fn => {
+    const next = fn(dataRef.current);
+    if (next !== dataRef.current) {
+      dataRef.current = next;
+      setData(next);
+    }
+    return next;
+  }, []);
+  const commit = useCallback(delta => {
+    apply(s => mergeState(s, delta));
+    engineRef.current?.broadcast(delta);
+  }, [apply]);
+  const notify = useCallback((msg, undo) => {
+    clearTimeout(toastTimer.current);
+    setToast({
+      msg,
+      undo
+    });
+    toastTimer.current = setTimeout(() => setToast(null), undo ? 6000 : 3500);
+  }, []);
+  if (!engineRef.current) {
+    engineRef.current = new SyncEngine({
+      getState: () => dataRef.current,
+      applyRemote: d => apply(s => mergeState(s, d)),
+      onStatus: st => setSyncStatus({
+        ...st
+      })
+    });
+  }
+
+  // Start or stop sync whenever the settings change.
+  useEffect(() => {
+    safeSet(SYNC_KEY, JSON.stringify(sync));
+    const engine = engineRef.current;
+    if (sync.enabled && sync.roomId) {
+      if (dataRef.current.isSample) {
+        apply(clearSample);
+        notify("Example entries were removed so they don't sync to your other devices.");
+      }
+      engine.start(sync.roomId, sync.password);
+    } else engine.stop();
+  }, [sync.enabled, sync.roomId, sync.password]);
+  useEffect(() => () => engineRef.current.stop(), []);
+
+  // Save on every change.
+  useEffect(() => {
+    const txt = JSON.stringify(data);
+    if (safeGet(STORAGE_KEY) === txt) return;
+    setSaveError(!safeSet(STORAGE_KEY, txt));
+  }, [data]);
+
+  // Another tab of this file changed the data: merge it in.
+  useEffect(() => {
+    const onStorage = e => {
+      if (e.key !== STORAGE_KEY || !e.newValue) return;
+      try {
+        const other = validateBudget(JSON.parse(e.newValue), {
+          strict: false
+        });
+        apply(s => ({
+          ...mergeState(s, other),
+          isSample: s.isSample && other.isSample
+        }));
+      } catch {}
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [apply]);
+  const categories = useMemo(() => live(data.categories), [data.categories]);
+  const allTx = useMemo(() => live(data.transactions), [data.transactions]);
+  const money = useMemo(() => makeMoney(data.currency.value), [data.currency.value]);
+  const monthTx = useMemo(() => allTx.filter(t => monthOf(t.date) === month), [allTx, month]);
+  const income = round2(monthTx.filter(t => t.type === "income").reduce((a, t) => a + t.amount, 0));
+  const expenses = round2(monthTx.filter(t => t.type === "expense").reduce((a, t) => a + t.amount, 0));
+  const net = round2(income - expenses);
+  const rate = income ? Math.round(net / income * 100) : null;
+  const monthName = monthLabel(month).split(" ")[0];
+  const addTx = t => {
+    commit({
+      transactions: {
+        [t.id]: {
+          ...t,
+          t: stamp(),
+          by: DEVICE
+        }
+      }
+    });
+    if (monthOf(t.date) !== month) setMonth(monthOf(t.date));
+    notify(`Added ${t.type} of ${money(t.amount)}.`);
+  };
+  const deleteTx = t => {
+    commit({
+      transactions: {
+        [t.id]: {
+          id: t.id,
+          deleted: true,
+          t: stamp(),
+          by: DEVICE
+        }
+      }
+    });
+    notify("Entry deleted.", () => commit({
+      transactions: {
+        [t.id]: {
+          ...t,
+          t: stamp(),
+          by: DEVICE
+        }
+      }
+    }));
+  };
+  const applyImport = (backup, how) => {
+    if (dataRef.current.isSample) apply(clearSample);
+    if (how === "replace") commit(replaceDelta(dataRef.current, backup));else commit({
+      currency: backup.currency,
+      categories: backup.categories,
+      transactions: backup.transactions
+    });
+    setModal(null);
+    const n = live(dataRef.current.transactions).length;
+    notify(how === "replace" ? `Replaced with the backup: ${n} entries.` : `Merged. You now have ${n} entries.`);
+  };
+  return /*#__PURE__*/React.createElement("div", {
+    className: "mx-auto w-full max-w-[1120px] px-4 sm:px-6 py-5 sm:py-8 flex flex-col gap-5"
+  }, /*#__PURE__*/React.createElement("header", {
+    className: "flex flex-col gap-4"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex items-start justify-between gap-3 flex-wrap"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "min-w-0"
+  }, /*#__PURE__*/React.createElement("h1", {
+    className: "m-0 text-[24px] sm:text-[28px] font-bold tracking-tight flex items-center gap-2 flex-wrap"
+  }, /*#__PURE__*/React.createElement(PiggyBank, {
+    size: 28,
+    style: {
+      color: "var(--accent)"
+    }
+  }), "Family Budget ", /*#__PURE__*/React.createElement(SyncDot, {
+    status: syncStatus,
+    onClick: () => setSyncOpen(true)
+  })), /*#__PURE__*/React.createElement("p", {
+    className: "m-0 mt-1 text-[13px] flex items-center gap-1.5",
+    style: {
+      color: "var(--muted)"
+    }
+  }, /*#__PURE__*/React.createElement(ShieldCheck, {
+    size: 14,
+    style: {
+      color: "var(--income)"
+    }
+  }), "Stored in this browser. Only your own devices can read it.")), /*#__PURE__*/React.createElement("div", {
+    className: "flex gap-2 w-full sm:w-auto"
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "btn flex-1 sm:flex-none py-2.5",
+    onClick: () => setModal("import")
+  }, /*#__PURE__*/React.createElement(Upload, {
+    size: 17
+  }), "Import Data"), /*#__PURE__*/React.createElement("button", {
+    className: "btn flex-1 sm:flex-none py-2.5",
+    onClick: () => setModal("export")
+  }, /*#__PURE__*/React.createElement(Download, {
+    size: 17
+  }), "Export Data"))), /*#__PURE__*/React.createElement(SyncSettings, {
+    settings: sync,
+    setSettings: setSync,
+    status: syncStatus,
+    open: syncOpen,
+    setOpen: setSyncOpen,
+    notify: notify
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center justify-between gap-2 flex-wrap"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center gap-1 panel px-1 py-1"
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "icon-btn",
+    onClick: () => setMonth(shiftMonth(month, -1)),
+    "aria-label": "Previous month"
+  }, /*#__PURE__*/React.createElement(ChevronLeft, {
+    size: 18
+  })), /*#__PURE__*/React.createElement("span", {
+    className: "font-semibold min-w-[150px] text-center"
+  }, monthLabel(month)), /*#__PURE__*/React.createElement("button", {
+    className: "icon-btn",
+    onClick: () => setMonth(shiftMonth(month, 1)),
+    "aria-label": "Next month"
+  }, /*#__PURE__*/React.createElement(ChevronRight, {
+    size: 18
+  }))), /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center gap-2"
+  }, month !== monthOf(todayISO()) && /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-ghost text-[13px] px-2",
+    onClick: () => setMonth(monthOf(todayISO()))
+  }, "This month"), /*#__PURE__*/React.createElement("label", {
+    className: "flex items-center gap-2 text-[13px]",
+    style: {
+      color: "var(--muted)"
+    }
+  }, "Currency", /*#__PURE__*/React.createElement("select", {
+    id: "currency",
+    className: "field py-1.5 w-auto",
+    value: data.currency.value,
+    onChange: e => commit({
+      currency: {
+        value: e.target.value,
+        t: stamp(),
+        by: DEVICE
+      }
+    })
+  }, CURRENCIES.map(c => /*#__PURE__*/React.createElement("option", {
+    key: c
+  }, c))))))), data.isSample && /*#__PURE__*/React.createElement(Notice, null, /*#__PURE__*/React.createElement("span", null, /*#__PURE__*/React.createElement("b", null, "You're looking at example entries"), " so you can see how the app works. "), /*#__PURE__*/React.createElement("button", {
+    className: "underline font-semibold bg-transparent border-0 p-0 cursor-pointer",
+    style: {
+      color: "var(--accent)"
+    },
+    onClick: () => {
+      apply(clearSample);
+      notify("Examples cleared. Your budget is ready for real entries.");
+    }
+  }, "Clear examples and start my budget"), /*#__PURE__*/React.createElement("span", null, ". They're also removed when you connect to sync.")), saveError && /*#__PURE__*/React.createElement(Notice, {
+    tone: "danger"
+  }, "This browser is blocking storage (private mode or full storage), so changes won't be kept after you close the page. Export your data to keep a copy."), /*#__PURE__*/React.createElement("section", {
+    className: "grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4",
+    "aria-label": "Summary"
+  }, /*#__PURE__*/React.createElement(StatCard, {
+    label: "Total income",
+    value: money(income),
+    icon: TrendingUp,
+    tone: "income",
+    sub: `${monthTx.filter(t => t.type === "income").length} entries in ${monthName}`
+  }), /*#__PURE__*/React.createElement(StatCard, {
+    label: "Total expenses",
+    value: money(expenses),
+    icon: TrendingDown,
+    tone: "expense",
+    sub: `${monthTx.filter(t => t.type === "expense").length} entries in ${monthName}`
+  }), /*#__PURE__*/React.createElement(StatCard, {
+    label: "Net savings",
+    value: money(net),
+    icon: PiggyBank,
+    tone: net < 0 ? "danger" : "accent",
+    sub: rate === null ? "Add income to see your savings rate" : net < 0 ? `Spent ${money(-net)} more than you earned` : `${rate}% of income saved`
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "grid grid-cols-1 lg:grid-cols-[1.35fr_1fr] gap-4 sm:gap-5 items-start"
+  }, /*#__PURE__*/React.createElement(BudgetProgress, {
+    categories: categories,
+    monthTx: monthTx,
+    money: money,
+    onManage: () => setModal("categories")
+  }), /*#__PURE__*/React.createElement(AddTransaction, {
+    categories: categories,
+    onAdd: addTx,
+    money: money
+  })), /*#__PURE__*/React.createElement(TransactionLog, {
+    transactions: showAll ? allTx : monthTx,
+    categories: categories,
+    money: money,
+    onDelete: deleteTx,
+    scopeLabel: monthLabel(month),
+    showAll: showAll,
+    setShowAll: setShowAll
+  }), /*#__PURE__*/React.createElement("footer", {
+    className: "text-[12.5px] text-center pb-4",
+    style: {
+      color: "var(--muted)"
+    }
+  }, allTx.length, " entries stored on this device", latestChange(data) ? ` · last change ${latestChange(data).toLocaleString()}` : "", " \xB7 device ", DEVICE), modal === "export" && /*#__PURE__*/React.createElement(ExportModal, {
+    state: data,
+    onClose: () => setModal(null),
+    notify: notify
+  }), modal === "import" && /*#__PURE__*/React.createElement(ImportModal, {
+    state: data,
+    onClose: () => setModal(null),
+    onApply: applyImport,
+    syncing: sync.enabled
+  }), modal === "categories" && /*#__PURE__*/React.createElement(CategoryModal, {
+    state: data,
+    commit: commit,
+    onClose: () => setModal(null),
+    money: money
+  }), toast && /*#__PURE__*/React.createElement("div", {
+    className: "toast",
+    role: "status"
+  }, /*#__PURE__*/React.createElement("span", null, toast.msg), toast.undo && /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      toast.undo();
+      setToast(null);
+    }
+  }, /*#__PURE__*/React.createElement(Undo2, {
+    size: 14,
+    className: "inline -mt-0.5"
+  }), " Undo")));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(/*#__PURE__*/React.createElement(App, null));
+</script>
+</body>
+</html>
