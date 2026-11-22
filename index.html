@@ -1561,7 +1561,7 @@ function CategoryModal({
   const save = () => {
     const name = form.name.trim();
     if (!name) return setErr("Give the category a name.");
-    if (cats.some(c => c.id !== form.id && c.name.toLowerCase() === name.toLowerCase() && c.kind === form.kind)) return setErr("You already have a category with that name.");
+    if (cats.some(c => c.id !== form.id && c.name.toLowerCase() === name.toLowerCase())) return setErr("You already have a category with that name.");
     const budget = form.kind === "expense" ? round2(Math.max(0, Number(form.budget) || 0)) : 0;
     const id = form.id || uid();
     commit({
@@ -1753,7 +1753,7 @@ function AddTransaction({
   const [amount, setAmount] = useState("");
   const [date, setDate] = useState(todayISO());
   const [note, setNote] = useState("");
-  const options = categories.filter(c => c.kind === type).sort((a, b) => a.name.localeCompare(b.name));
+  const options = categories.slice().sort((a, b) => a.name.localeCompare(b.name));
   const [categoryId, setCategoryId] = useState("");
   const [err, setErr] = useState("");
   useEffect(() => {
