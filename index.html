@@ -181,7 +181,10 @@ const {
   KeyRound,
   Unplug,
   PlugZap,
-  ChevronDown
+  ChevronDown,
+  CreditCard,
+  Landmark,
+  CircleDollarSign
 } = LucideReact;
 
 /* ---------- constants & storage ---------- */
@@ -288,16 +291,16 @@ function mergeState(s, d) {
       currency: w
     };
   }
-  for (const kind of ["categories", "transactions"]) {
+  for (const kind of ["categories", "transactions", "paymentMethods"]) {
     if (!d[kind]) continue;
     let map = null;
     for (const [id, rec] of Object.entries(d[kind])) {
       observe(rec.t);
-      const cur = s[kind][id];
+      const cur = (s[kind] || {})[id];
       const w = winner(cur, rec);
       if (!cur || !same(w, cur)) {
         map = map || {
-          ...s[kind]
+          ...(s[kind] || {})
         };
         map[id] = w;
       }
@@ -338,6 +341,20 @@ function cleanCategory(c, i, legacy) {
     color: /^#[0-9a-f]{6}$/i.test(c.color || "") ? c.color : COLORS[i % COLORS.length]
   };
 }
+const PM_TYPES = ["credit_card", "debit_card", "cash", "loan"];
+function cleanPaymentMethod(p, i, legacy) {
+  if (!p || typeof p !== "object") return null;
+  const base = {
+    id: String(p.id || uid()),
+    t: cleanT(p.t, 1),
+    by: typeof p.by === "string" ? p.by.slice(0, 40) : legacy
+  };
+  if (p.deleted === true) return { ...base, deleted: true };
+  if (typeof p.name !== "string" || !p.name.trim()) return null;
+  const pmType = PM_TYPES.includes(p.pmType) ? p.pmType : "credit_card";
+  const initialBalance = Math.max(0, Number(p.initialBalance) || 0);
+  return { ...base, name: p.name.trim().slice(0, 60), pmType, initialBalance: round2(initialBalance) };
+}
 function cleanTx(t, i, legacy) {
   if (!t || typeof t !== "object") return null;
   const base = {
@@ -361,6 +378,7 @@ function cleanTx(t, i, legacy) {
     categoryId: t.categoryId ? String(t.categoryId) : null,
     note: typeof t.note === "string" ? t.note.slice(0, 200) : ""
   };
+  if (t.paymentMethodId) rec.paymentMethodId = String(t.paymentMethodId);
   if (t.sample === true) rec.sample = true;
   return rec;
 }
@@ -403,6 +421,7 @@ function validateBudget(raw, {
     currency: cleanCurrency(raw.currency, raw.currency),
     categories: cleanMap(raw.categories, cleanCategory, "legacy", "categories", strict),
     transactions: cleanMap(raw.transactions, cleanTx, "legacy", "transactions", strict),
+    paymentMethods: raw.paymentMethods ? cleanMap(raw.paymentMethods, cleanPaymentMethod, "legacy", "paymentMethods", strict) : {},
     isSample: !!raw.isSample
   };
 }
@@ -413,6 +432,7 @@ function cleanDelta(d) {
   if (d.currency) out.currency = cleanCurrency(d.currency, null);
   if (d.categories) out.categories = cleanMap(d.categories, cleanCategory, "peer", "categories", false);
   if (d.transactions) out.transactions = cleanMap(d.transactions, cleanTx, "peer", "transactions", false);
+  if (d.paymentMethods) out.paymentMethods = cleanMap(d.paymentMethods, cleanPaymentMethod, "peer", "paymentMethods", false);
   return out;
 }
 
@@ -441,6 +461,7 @@ function emptyState() {
     },
     categories: defaultCategories(),
     transactions: {},
+    paymentMethods: {},
     isSample: false
   };
 }
@@ -508,12 +529,13 @@ function exportable(s) {
     currency: s.currency,
     categories: s.categories,
     transactions: clearSample(s).transactions,
+    paymentMethods: s.paymentMethods || {},
     exportedAt: new Date().toISOString()
   };
 }
 function latestChange(s) {
   let t = s.currency.t;
-  for (const kind of ["categories", "transactions"]) for (const r of Object.values(s[kind])) if (r.t > t) t = r.t;
+  for (const kind of ["categories", "transactions", "paymentMethods"]) for (const r of Object.values(s[kind] || {})) if (r.t > t) t = r.t;
   return t > 1 ? new Date(t) : null;
 }
 
@@ -1320,9 +1342,10 @@ function replaceDelta(cur, backup) {
       by: DEVICE
     },
     categories: {},
-    transactions: {}
+    transactions: {},
+    paymentMethods: {}
   };
-  for (const kind of ["categories", "transactions"]) {
+  for (const kind of ["categories", "transactions", "paymentMethods"]) {
     for (const [id, r] of Object.entries(cur[kind])) if (!backup[kind][id] && !r.deleted) d[kind][id] = {
       id,
       deleted: true,
@@ -1743,9 +1766,98 @@ function CategoryModal({
   })))))))));
 }
 
+/* ---------- payment method modal ---------- */
+function PaymentMethodModal({ state, commit, onClose, money }) {
+  const pms = live(state.paymentMethods || {});
+  const [editing, setEditing] = useState(null);
+  const blank = { id: null, name: "", pmType: "credit_card", initialBalance: "" };
+  const [form, setForm] = useState(blank);
+  const [err, setErr] = useState("");
+  const [confirmDel, setConfirmDel] = useState(null);
+  const save = () => {
+    const name = form.name.trim();
+    if (!name) return setErr("Name is required.");
+    if (pms.some(p => p.id !== form.id && p.name.toLowerCase() === name.toLowerCase())) return setErr("Name already used.");
+    const bal = Number(String(form.initialBalance).replace(",",".")) || 0;
+    const id = form.id || uid();
+    commit({ paymentMethods: { [id]: { id, name, pmType: form.pmType, initialBalance: round2(Math.max(0, bal)), t: stamp(), by: DEVICE } } });
+    setEditing(null); setForm(blank); setErr("");
+  };
+  const remove = id => { commit({ paymentMethods: { [id]: { id, deleted: true, t: stamp(), by: DEVICE } } }); setConfirmDel(null); };
+  const txCount = id => Object.values(state.transactions).filter(t => !t.deleted && t.paymentMethodId === id).length;
+  const pmTypeLabel = t => t === "credit_card" ? "Credit Card" : t === "debit_card" ? "Debit Card" : t === "loan" ? "Loan" : "Cash";
+  const pmTypeIcon = t => t === "loan" ? Landmark : CreditCard;
+  return /*#__PURE__*/React.createElement(Modal, { onClose: onClose, title: "Payment Methods & Loans" },
+    (editing !== null || pms.length === 0) && /*#__PURE__*/React.createElement("div", { className: "flex flex-col gap-2 mb-3" },
+      /*#__PURE__*/React.createElement("div", { className: "grid grid-cols-2 gap-2" },
+        /*#__PURE__*/React.createElement("label", { className: "flex flex-col gap-1" },
+          /*#__PURE__*/React.createElement("span", { className: "label" }, "Name"),
+          /*#__PURE__*/React.createElement("input", { className: "field", value: form.name, onChange: e => setForm({...form, name: e.target.value}), placeholder: "e.g. Chase Sapphire", maxLength: 60 })),
+        /*#__PURE__*/React.createElement("label", { className: "flex flex-col gap-1" },
+          /*#__PURE__*/React.createElement("span", { className: "label" }, "Type"),
+          /*#__PURE__*/React.createElement("select", { className: "field", value: form.pmType, onChange: e => setForm({...form, pmType: e.target.value}) },
+            /*#__PURE__*/React.createElement("option", { value: "credit_card" }, "Credit Card"),
+            /*#__PURE__*/React.createElement("option", { value: "debit_card" }, "Debit Card"),
+            /*#__PURE__*/React.createElement("option", { value: "loan" }, "Loan"),
+            /*#__PURE__*/React.createElement("option", { value: "cash" }, "Cash")))),
+      (form.pmType === "credit_card" || form.pmType === "loan") && /*#__PURE__*/React.createElement("label", { className: "flex flex-col gap-1" },
+        /*#__PURE__*/React.createElement("span", { className: "label" }, form.pmType === "loan" ? "Total loan amount" : "Outstanding balance"),
+        /*#__PURE__*/React.createElement("input", { className: "field num", type: "text", inputMode: "decimal", value: form.initialBalance, onChange: e => setForm({...form, initialBalance: e.target.value}), placeholder: "0.00" })),
+      err && /*#__PURE__*/React.createElement(Notice, { tone: "danger" }, err),
+      /*#__PURE__*/React.createElement("div", { className: "flex gap-2" },
+        /*#__PURE__*/React.createElement("button", { className: "btn btn-primary flex-1 py-2", onClick: save }, form.id ? "Update" : "Add"),
+        editing !== null && /*#__PURE__*/React.createElement("button", { className: "btn flex-1 py-2", onClick: () => { setEditing(null); setForm(blank); setErr(""); } }, "Cancel"))),
+    pms.length > 0 && /*#__PURE__*/React.createElement("ul", { className: "m-0 p-0 list-none flex flex-col gap-1" },
+      pms.sort((a,b) => a.name.localeCompare(b.name)).map(p => /*#__PURE__*/React.createElement("li", { key: p.id, className: "flex items-center gap-3 py-1.5" },
+        /*#__PURE__*/React.createElement(pmTypeIcon(p.pmType), { size: 16, style: { color: "var(--accent)" } }),
+        /*#__PURE__*/React.createElement("div", { className: "flex-1 min-w-0" },
+          /*#__PURE__*/React.createElement("span", { className: "truncate font-medium" }, p.name),
+          /*#__PURE__*/React.createElement("span", { className: "text-[12px] ml-2", style: { color: "var(--muted)" } }, pmTypeLabel(p.pmType), p.initialBalance > 0 ? ` · ${money(p.initialBalance)} initial` : "")),
+        confirmDel === p.id ? /*#__PURE__*/React.createElement("span", { className: "flex gap-1 items-center" },
+          /*#__PURE__*/React.createElement("button", { className: "btn btn-danger py-1 px-2 text-[13px]", onClick: () => remove(p.id) }, "Delete"),
+          /*#__PURE__*/React.createElement("button", { className: "btn py-1 px-2 text-[13px]", onClick: () => setConfirmDel(null) }, "Keep")) :
+        /*#__PURE__*/React.createElement("span", { className: "flex" },
+          /*#__PURE__*/React.createElement("button", { className: "icon-btn", "aria-label": `Edit ${p.name}`, onClick: () => { setEditing(p.id); setForm({ ...p, initialBalance: p.initialBalance || "" }); setErr(""); } }, /*#__PURE__*/React.createElement(Pencil, { size: 15 })),
+          /*#__PURE__*/React.createElement("button", { className: "icon-btn", "aria-label": `Delete ${p.name}`, title: txCount(p.id) ? `${txCount(p.id)} entries use this` : "Delete", onClick: () => setConfirmDel(p.id) }, /*#__PURE__*/React.createElement(Trash2, { size: 15 })))
+      ))),
+    pms.length > 0 && editing === null && /*#__PURE__*/React.createElement("button", { className: "btn mt-2 w-full py-2", onClick: () => setEditing("new") }, /*#__PURE__*/React.createElement(Plus, { size: 16 }), "Add payment method"));
+}
+
+/* ---------- debt tracker ---------- */
+function DebtTracker({ state, money }) {
+  const pms = live(state.paymentMethods || {});
+  const debts = pms.filter(p => p.pmType === "credit_card" || p.pmType === "loan");
+  if (!debts.length) return null;
+  const allTx = live(state.transactions);
+  const rows = debts.map(p => {
+    const payments = allTx.filter(t => t.paymentMethodId === p.id && t.type === "expense");
+    const totalPaid = round2(payments.reduce((a, t) => a + t.amount, 0));
+    const remaining = round2(Math.max(0, p.initialBalance - totalPaid));
+    const pct = p.initialBalance > 0 ? Math.min(100, totalPaid / p.initialBalance * 100) : 0;
+    return { ...p, totalPaid, remaining, pct };
+  }).sort((a, b) => a.name.localeCompare(b.name));
+  return /*#__PURE__*/React.createElement("section", { className: "panel p-4 sm:p-5 flex flex-col gap-3" },
+    /*#__PURE__*/React.createElement("h2", { className: "m-0 text-[17px] font-bold flex items-center gap-2" },
+      /*#__PURE__*/React.createElement(CircleDollarSign, { size: 18, style: { color: "var(--expense)" } }),
+      "Debt Tracker"),
+    rows.map(r => /*#__PURE__*/React.createElement("div", { key: r.id, className: "flex flex-col gap-1" },
+      /*#__PURE__*/React.createElement("div", { className: "flex items-center justify-between gap-2" },
+        /*#__PURE__*/React.createElement("div", { className: "flex items-center gap-2 min-w-0" },
+          /*#__PURE__*/React.createElement(r.pmType === "loan" ? Landmark : CreditCard, { size: 15, style: { color: "var(--muted)" } }),
+          /*#__PURE__*/React.createElement("span", { className: "font-medium truncate" }, r.name),
+          /*#__PURE__*/React.createElement("span", { className: "text-[12px] px-1.5 py-0.5 rounded", style: { background: "var(--bg2)", color: "var(--muted)" } }, r.pmType === "loan" ? "Loan" : "Card")),
+        /*#__PURE__*/React.createElement("span", { className: "num font-semibold", style: { color: r.remaining > 0 ? "var(--expense)" : "var(--income)" } }, r.remaining > 0 ? `${money(r.remaining)} left` : "Paid off!")),
+      /*#__PURE__*/React.createElement("div", { className: "h-2 rounded-full overflow-hidden", style: { background: "var(--bg2)" } },
+        /*#__PURE__*/React.createElement("div", { className: "h-full rounded-full transition-all", style: { width: `${r.pct}%`, background: r.pct >= 100 ? "var(--income)" : "var(--accent)" } })),
+      /*#__PURE__*/React.createElement("div", { className: "flex justify-between text-[12px]", style: { color: "var(--muted)" } },
+        /*#__PURE__*/React.createElement("span", { className: "num" }, money(r.totalPaid), " paid"),
+        /*#__PURE__*/React.createElement("span", { className: "num" }, money(r.initialBalance), " total")))));
+}
+
 /* ---------- add transaction ---------- */
 function AddTransaction({
   categories,
+  paymentMethods,
   onAdd,
   money
 }) {
@@ -1754,7 +1866,9 @@ function AddTransaction({
   const [date, setDate] = useState(todayISO());
   const [note, setNote] = useState("");
   const options = categories.slice().sort((a, b) => a.name.localeCompare(b.name));
+  const pmOptions = (paymentMethods || []).slice().sort((a, b) => a.name.localeCompare(b.name));
   const [categoryId, setCategoryId] = useState("");
+  const [paymentMethodId, setPaymentMethodId] = useState("");
   const [err, setErr] = useState("");
   useEffect(() => {
     if (!options.some(c => c.id === categoryId)) setCategoryId(options[0]?.id || "");
@@ -1764,14 +1878,16 @@ function AddTransaction({
     const n = Number(amount.replace(",", "."));
     if (!isFinite(n) || n <= 0) return setErr("Enter an amount greater than zero.");
     if (!date) return setErr("Pick a date.");
-    onAdd({
+    const tx = {
       id: uid(),
       type,
       amount: round2(n),
       date,
       categoryId: categoryId || null,
       note: note.trim()
-    });
+    };
+    if (paymentMethodId) tx.paymentMethodId = paymentMethodId;
+    onAdd(tx);
     setAmount("");
     setNote("");
     setErr("");
@@ -1848,7 +1964,15 @@ function AddTransaction({
     value: c.id
   }, c.name)), /*#__PURE__*/React.createElement("option", {
     value: ""
-  }, "Uncategorized"))), /*#__PURE__*/React.createElement("label", {
+  }, "Uncategorized"))), pmOptions.length > 0 && /*#__PURE__*/React.createElement("label", {
+    className: "flex flex-col gap-1.5"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "label flex items-center gap-1"
+  }, /*#__PURE__*/React.createElement(CreditCard, { size: 14, style: { color: "var(--muted)" } }), "Payment method"), /*#__PURE__*/React.createElement("select", {
+    className: "field",
+    value: paymentMethodId,
+    onChange: e => setPaymentMethodId(e.target.value)
+  }, /*#__PURE__*/React.createElement("option", { value: "" }, "None"), pmOptions.map(p => /*#__PURE__*/React.createElement("option", { key: p.id, value: p.id }, p.name)))), /*#__PURE__*/React.createElement("label", {
     className: "flex flex-col gap-1.5"
   }, /*#__PURE__*/React.createElement("span", {
     className: "label"
@@ -2021,6 +2145,7 @@ function BudgetProgress({
 function TransactionLog({
   transactions,
   categories,
+  paymentMethods,
   money,
   onDelete,
   onEdit,
@@ -2032,13 +2157,17 @@ function TransactionLog({
   const [filter, setFilter] = useState("all");
   const [editId, setEditId] = useState(null);
   const [editForm, setEditForm] = useState({});
-  const startEdit = t => { setEditId(t.id); setEditForm({ type: t.type, amount: String(t.amount), date: t.date, categoryId: t.categoryId || "", note: t.note || "" }); };
+  const pmList = (paymentMethods || []).slice().sort((a, b) => a.name.localeCompare(b.name));
+  const pmMap = useMemo(() => Object.fromEntries(pmList.map(p => [p.id, p])), [paymentMethods]);
+  const startEdit = t => { setEditId(t.id); setEditForm({ type: t.type, amount: String(t.amount), date: t.date, categoryId: t.categoryId || "", note: t.note || "", paymentMethodId: t.paymentMethodId || "" }); };
   const cancelEdit = () => { setEditId(null); setEditForm({}); };
   const saveEdit = () => {
     const n = Number(editForm.amount.replace(",", "."));
     if (!isFinite(n) || n <= 0) return;
     if (!editForm.date) return;
-    onEdit(editId, { type: editForm.type, amount: round2(n), date: editForm.date, categoryId: editForm.categoryId || null, note: editForm.note.trim() });
+    const updates = { type: editForm.type, amount: round2(n), date: editForm.date, categoryId: editForm.categoryId || null, note: editForm.note.trim() };
+    if (editForm.paymentMethodId) updates.paymentMethodId = editForm.paymentMethodId; else updates.paymentMethodId = undefined;
+    onEdit(editId, updates);
     cancelEdit();
   };
   const catMap = useMemo(() => Object.fromEntries(categories.map(c => [c.id, c])), [categories]);
@@ -2155,7 +2284,11 @@ function TransactionLog({
     value: editForm.note,
     onChange: e => setEditForm({...editForm, note: e.target.value}),
     placeholder: "Note"
-  })), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("div", { className: "flex items-center gap-1" }, /*#__PURE__*/React.createElement("select", {
+  }), pmList.length > 0 && /*#__PURE__*/React.createElement("select", {
+    className: "field text-[13px] py-1 mt-1",
+    value: editForm.paymentMethodId,
+    onChange: e => setEditForm({...editForm, paymentMethodId: e.target.value})
+  }, /*#__PURE__*/React.createElement("option", { value: "" }, "No card/loan"), pmList.map(p => /*#__PURE__*/React.createElement("option", { key: p.id, value: p.id }, p.name)))), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("div", { className: "flex items-center gap-1" }, /*#__PURE__*/React.createElement("select", {
     className: "field text-[13px] py-1 w-[70px]",
     value: editForm.type,
     onChange: e => setEditForm({...editForm, type: e.target.value})
@@ -2188,7 +2321,10 @@ function TransactionLog({
     style: {
       color: t.note ? "var(--fg)" : "var(--muted)"
     }
-  }, t.note || "—", fromOther(t) && /*#__PURE__*/React.createElement("span", {
+  }, t.note || "—", t.paymentMethodId && pmMap[t.paymentMethodId] && /*#__PURE__*/React.createElement("span", {
+    className: "ml-1.5 inline-flex items-center gap-0.5 text-[11px] px-1.5 py-0.5 rounded",
+    style: { background: "var(--bg2)", color: "var(--muted)" }
+  }, /*#__PURE__*/React.createElement(CreditCard, { size: 10 }), " ", pmMap[t.paymentMethodId].name), fromOther(t) && /*#__PURE__*/React.createElement("span", {
     className: "tag-synced",
     title: "Added on another device"
   }, /*#__PURE__*/React.createElement(Users, {
@@ -2239,7 +2375,11 @@ function TransactionLog({
     type: "text", className: "field text-[15px] py-2",
     value: editForm.note, placeholder: "Note (optional)",
     onChange: e => setEditForm({...editForm, note: e.target.value})
-  }), /*#__PURE__*/React.createElement("div", { className: "flex gap-2" }, /*#__PURE__*/React.createElement("button", {
+  }), pmList.length > 0 && /*#__PURE__*/React.createElement("select", {
+    className: "field text-[15px] py-2",
+    value: editForm.paymentMethodId,
+    onChange: e => setEditForm({...editForm, paymentMethodId: e.target.value})
+  }, /*#__PURE__*/React.createElement("option", { value: "" }, "No card/loan"), pmList.map(p => /*#__PURE__*/React.createElement("option", { key: p.id, value: p.id }, p.name))), /*#__PURE__*/React.createElement("div", { className: "flex gap-2" }, /*#__PURE__*/React.createElement("button", {
     className: "btn flex-1 py-2",
     style: { background: "var(--accent)", color: "#fff", border: "none" },
     onClick: saveEdit
@@ -2280,7 +2420,10 @@ function TransactionLog({
     className: "num shrink-0"
   }, dateLabel(t.date)), /*#__PURE__*/React.createElement(Cat, {
     t: t
-  }))), /*#__PURE__*/React.createElement(Amt, {
+  }), t.paymentMethodId && pmMap[t.paymentMethodId] && /*#__PURE__*/React.createElement("span", {
+    className: "inline-flex items-center gap-0.5 text-[11px] px-1 py-0 rounded shrink-0",
+    style: { background: "var(--bg2)" }
+  }, /*#__PURE__*/React.createElement(CreditCard, { size: 9 }), " ", pmMap[t.paymentMethodId].name))), /*#__PURE__*/React.createElement(Amt, {
     t: t
   }), /*#__PURE__*/React.createElement("div", { className: "flex gap-0.5 -mr-2" }, /*#__PURE__*/React.createElement("button", {
     className: "icon-btn",
@@ -2386,6 +2529,7 @@ function App() {
     return () => window.removeEventListener("storage", onStorage);
   }, [apply]);
   const categories = useMemo(() => live(data.categories), [data.categories]);
+  const paymentMethods = useMemo(() => live(data.paymentMethods || {}), [data.paymentMethods]);
   const allTx = useMemo(() => live(data.transactions), [data.transactions]);
   const money = useMemo(() => makeMoney(data.currency.value), [data.currency.value]);
   const monthTx = useMemo(() => allTx.filter(t => monthOf(t.date) === month), [allTx, month]);
@@ -2448,7 +2592,8 @@ function App() {
     if (how === "replace") commit(replaceDelta(dataRef.current, backup));else commit({
       currency: backup.currency,
       categories: backup.categories,
-      transactions: backup.transactions
+      transactions: backup.transactions,
+      paymentMethods: backup.paymentMethods || {}
     });
     setModal(null);
     const n = live(dataRef.current.transactions).length;
@@ -2494,7 +2639,12 @@ function App() {
     onClick: () => setModal("export")
   }, /*#__PURE__*/React.createElement(Download, {
     size: 17
-  }), "Export Data"))), /*#__PURE__*/React.createElement(SyncSettings, {
+  }), "Export Data"), /*#__PURE__*/React.createElement("button", {
+    className: "btn flex-1 sm:flex-none py-2.5",
+    onClick: () => setModal("paymentMethods")
+  }, /*#__PURE__*/React.createElement(CreditCard, {
+    size: 17
+  }), "Cards & Loans"))), /*#__PURE__*/React.createElement(SyncSettings, {
     settings: sync,
     setSettings: setSync,
     status: syncStatus,
@@ -2583,11 +2733,16 @@ function App() {
     onManage: () => setModal("categories")
   }), /*#__PURE__*/React.createElement(AddTransaction, {
     categories: categories,
+    paymentMethods: paymentMethods,
     onAdd: addTx,
     money: money
-  })), /*#__PURE__*/React.createElement(TransactionLog, {
+  })), /*#__PURE__*/React.createElement(DebtTracker, {
+    state: data,
+    money: money
+  }), /*#__PURE__*/React.createElement(TransactionLog, {
     transactions: showAll ? allTx : monthTx,
     categories: categories,
+    paymentMethods: paymentMethods,
     money: money,
     onDelete: deleteTx,
     onEdit: editTx,
@@ -2609,6 +2764,11 @@ function App() {
     onApply: applyImport,
     syncing: sync.enabled
   }), modal === "categories" && /*#__PURE__*/React.createElement(CategoryModal, {
+    state: data,
+    commit: commit,
+    onClose: () => setModal(null),
+    money: money
+  }), modal === "paymentMethods" && /*#__PURE__*/React.createElement(PaymentMethodModal, {
     state: data,
     commit: commit,
     onClose: () => setModal(null),
