@@ -2023,12 +2023,24 @@ function TransactionLog({
   categories,
   money,
   onDelete,
+  onEdit,
   scopeLabel,
   showAll,
   setShowAll
 }) {
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState("all");
+  const [editId, setEditId] = useState(null);
+  const [editForm, setEditForm] = useState({});
+  const startEdit = t => { setEditId(t.id); setEditForm({ type: t.type, amount: String(t.amount), date: t.date, categoryId: t.categoryId || "", note: t.note || "" }); };
+  const cancelEdit = () => { setEditId(null); setEditForm({}); };
+  const saveEdit = () => {
+    const n = Number(editForm.amount.replace(",", "."));
+    if (!isFinite(n) || n <= 0) return;
+    if (!editForm.date) return;
+    onEdit(editId, { type: editForm.type, amount: round2(n), date: editForm.date, categoryId: editForm.categoryId || null, note: editForm.note.trim() });
+    cancelEdit();
+  };
   const catMap = useMemo(() => Object.fromEntries(categories.map(c => [c.id, c])), [categories]);
   const list = useMemo(() => {
     const s = q.trim().toLowerCase();
@@ -2122,10 +2134,45 @@ function TransactionLog({
   }, "Note"), /*#__PURE__*/React.createElement("th", {
     className: "label text-right"
   }, "Amount"), /*#__PURE__*/React.createElement("th", {
-    className: "w-[52px]"
+    className: "w-[80px]"
   }, /*#__PURE__*/React.createElement("span", {
     className: "sr-only"
-  }, "Actions")))), /*#__PURE__*/React.createElement("tbody", null, list.map(t => /*#__PURE__*/React.createElement("tr", {
+  }, "Actions")))), /*#__PURE__*/React.createElement("tbody", null, list.map(t => editId === t.id ? /*#__PURE__*/React.createElement("tr", {
+    key: t.id,
+    style: { background: "var(--bg2)" }
+  }, /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("input", {
+    type: "date",
+    className: "field text-[13px] py-1",
+    value: editForm.date,
+    onChange: e => setEditForm({...editForm, date: e.target.value})
+  })), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("select", {
+    className: "field text-[13px] py-1",
+    value: editForm.categoryId,
+    onChange: e => setEditForm({...editForm, categoryId: e.target.value})
+  }, categories.slice().sort((a,b) => a.name.localeCompare(b.name)).map(c => /*#__PURE__*/React.createElement("option", { key: c.id, value: c.id }, c.name)))), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("input", {
+    type: "text",
+    className: "field text-[13px] py-1",
+    value: editForm.note,
+    onChange: e => setEditForm({...editForm, note: e.target.value}),
+    placeholder: "Note"
+  })), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("div", { className: "flex items-center gap-1" }, /*#__PURE__*/React.createElement("select", {
+    className: "field text-[13px] py-1 w-[70px]",
+    value: editForm.type,
+    onChange: e => setEditForm({...editForm, type: e.target.value})
+  }, /*#__PURE__*/React.createElement("option", { value: "expense" }, "−"), /*#__PURE__*/React.createElement("option", { value: "income" }, "+")), /*#__PURE__*/React.createElement("input", {
+    type: "text",
+    inputMode: "decimal",
+    className: "field num text-[13px] py-1 w-[80px]",
+    value: editForm.amount,
+    onChange: e => setEditForm({...editForm, amount: e.target.value})
+  }))), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("div", { className: "flex gap-1" }, /*#__PURE__*/React.createElement("button", {
+    className: "btn text-[12px] py-1 px-2",
+    style: { background: "var(--accent)", color: "#fff", border: "none" },
+    onClick: saveEdit
+  }, "Save"), /*#__PURE__*/React.createElement("button", {
+    className: "btn text-[12px] py-1 px-2",
+    onClick: cancelEdit
+  }, "Cancel")))) : /*#__PURE__*/React.createElement("tr", {
     key: t.id
   }, /*#__PURE__*/React.createElement("td", {
     className: "num text-[13.5px] whitespace-nowrap",
@@ -2152,15 +2199,54 @@ function TransactionLog({
     t: t
   })), /*#__PURE__*/React.createElement("td", {
     className: "text-right"
-  }, /*#__PURE__*/React.createElement("button", {
+  }, /*#__PURE__*/React.createElement("div", { className: "flex gap-0.5 justify-end" }, /*#__PURE__*/React.createElement("button", {
+    className: "icon-btn",
+    "aria-label": `Edit ${t.note || "entry"}`,
+    onClick: () => startEdit(t)
+  }, /*#__PURE__*/React.createElement(Pencil, {
+    size: 15
+  })), /*#__PURE__*/React.createElement("button", {
     className: "icon-btn",
     "aria-label": `Delete ${t.note || "entry"}`,
     onClick: () => onDelete(t)
   }, /*#__PURE__*/React.createElement(Trash2, {
     size: 16
-  })))))))), /*#__PURE__*/React.createElement("ul", {
+  }))))))))), /*#__PURE__*/React.createElement("ul", {
     className: "sm:hidden m-0 p-0 list-none"
-  }, list.map(t => /*#__PURE__*/React.createElement("li", {
+  }, list.map(t => editId === t.id ? /*#__PURE__*/React.createElement("li", {
+    key: t.id,
+    className: "px-4 py-3 border-b last:border-b-0 flex flex-col gap-2",
+    style: { borderColor: "var(--line)", background: "var(--bg2)" }
+  }, /*#__PURE__*/React.createElement("div", { className: "seg", role: "group" }, /*#__PURE__*/React.createElement("button", {
+    type: "button", "aria-pressed": editForm.type === "expense",
+    onClick: () => setEditForm({...editForm, type: "expense"})
+  }, "Expense"), /*#__PURE__*/React.createElement("button", {
+    type: "button", "aria-pressed": editForm.type === "income",
+    onClick: () => setEditForm({...editForm, type: "income"})
+  }, "Income")), /*#__PURE__*/React.createElement("div", { className: "grid grid-cols-2 gap-2" }, /*#__PURE__*/React.createElement("input", {
+    type: "text", inputMode: "decimal", className: "field text-[15px] py-2",
+    value: editForm.amount, placeholder: "Amount",
+    onChange: e => setEditForm({...editForm, amount: e.target.value})
+  }), /*#__PURE__*/React.createElement("input", {
+    type: "date", className: "field text-[15px] py-2",
+    value: editForm.date,
+    onChange: e => setEditForm({...editForm, date: e.target.value})
+  })), /*#__PURE__*/React.createElement("select", {
+    className: "field text-[15px] py-2",
+    value: editForm.categoryId,
+    onChange: e => setEditForm({...editForm, categoryId: e.target.value})
+  }, categories.slice().sort((a,b) => a.name.localeCompare(b.name)).map(c => /*#__PURE__*/React.createElement("option", { key: c.id, value: c.id }, c.name))), /*#__PURE__*/React.createElement("input", {
+    type: "text", className: "field text-[15px] py-2",
+    value: editForm.note, placeholder: "Note (optional)",
+    onChange: e => setEditForm({...editForm, note: e.target.value})
+  }), /*#__PURE__*/React.createElement("div", { className: "flex gap-2" }, /*#__PURE__*/React.createElement("button", {
+    className: "btn flex-1 py-2",
+    style: { background: "var(--accent)", color: "#fff", border: "none" },
+    onClick: saveEdit
+  }, "Save"), /*#__PURE__*/React.createElement("button", {
+    className: "btn flex-1 py-2",
+    onClick: cancelEdit
+  }, "Cancel"))) : /*#__PURE__*/React.createElement("li", {
     key: t.id,
     className: "flex items-center gap-3 px-4 py-3 border-b last:border-b-0",
     style: {
@@ -2196,13 +2282,19 @@ function TransactionLog({
     t: t
   }))), /*#__PURE__*/React.createElement(Amt, {
     t: t
-  }), /*#__PURE__*/React.createElement("button", {
-    className: "icon-btn -mr-2",
+  }), /*#__PURE__*/React.createElement("div", { className: "flex gap-0.5 -mr-2" }, /*#__PURE__*/React.createElement("button", {
+    className: "icon-btn",
+    "aria-label": `Edit ${t.note || "entry"}`,
+    onClick: () => startEdit(t)
+  }, /*#__PURE__*/React.createElement(Pencil, {
+    size: 15
+  })), /*#__PURE__*/React.createElement("button", {
+    className: "icon-btn",
     "aria-label": `Delete ${t.note || "entry"}`,
     onClick: () => onDelete(t)
   }, /*#__PURE__*/React.createElement(Trash2, {
     size: 16
-  })))))));
+  }))))))));
 }
 
 /* ---------- app ---------- */
@@ -2314,6 +2406,21 @@ function App() {
     });
     if (monthOf(t.date) !== month) setMonth(monthOf(t.date));
     notify(`Added ${t.type} of ${money(t.amount)}.`);
+  };
+  const editTx = (id, updates) => {
+    const old = dataRef.current.transactions[id];
+    if (!old) return;
+    commit({
+      transactions: {
+        [id]: {
+          ...old,
+          ...updates,
+          t: stamp(),
+          by: DEVICE
+        }
+      }
+    });
+    notify(`Entry updated.`);
   };
   const deleteTx = t => {
     commit({
@@ -2483,6 +2590,7 @@ function App() {
     categories: categories,
     money: money,
     onDelete: deleteTx,
+    onEdit: editTx,
     scopeLabel: monthLabel(month),
     showAll: showAll,
     setShowAll: setShowAll
