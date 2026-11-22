@@ -353,8 +353,7 @@ function cleanPaymentMethod(p, i, legacy) {
   if (typeof p.name !== "string" || !p.name.trim()) return null;
   const pmType = PM_TYPES.includes(p.pmType) ? p.pmType : "credit_card";
   const initialBalance = Math.max(0, Number(p.initialBalance) || 0);
-  const statementDay = Math.max(1, Math.min(31, Math.round(Number(p.statementDay) || 1)));
-  return { ...base, name: p.name.trim().slice(0, 60), pmType, initialBalance: round2(initialBalance), statementDay };
+  return { ...base, name: p.name.trim().slice(0, 60), pmType, initialBalance: round2(initialBalance) };
 }
 function cleanTx(t, i, legacy) {
   if (!t || typeof t !== "object") return null;
@@ -1771,7 +1770,7 @@ function CategoryModal({
 function PaymentMethodModal({ state, commit, onClose, money }) {
   const pms = live(state.paymentMethods || {});
   const [editing, setEditing] = useState(null);
-  const blank = { id: null, name: "", pmType: "credit_card", initialBalance: "", statementDay: "1" };
+  const blank = { id: null, name: "", pmType: "credit_card", initialBalance: "" };
   const [form, setForm] = useState(blank);
   const [err, setErr] = useState("");
   const [confirmDel, setConfirmDel] = useState(null);
@@ -1781,8 +1780,7 @@ function PaymentMethodModal({ state, commit, onClose, money }) {
     if (pms.some(p => p.id !== form.id && p.name.toLowerCase() === name.toLowerCase())) return setErr("Name already used.");
     const bal = Number(String(form.initialBalance).replace(",",".")) || 0;
     const id = form.id || uid();
-    const sd = Math.max(1, Math.min(31, Math.round(Number(form.statementDay) || 1)));
-    commit({ paymentMethods: { [id]: { id, name, pmType: form.pmType, initialBalance: round2(Math.max(0, bal)), statementDay: sd, t: stamp(), by: DEVICE } } });
+    commit({ paymentMethods: { [id]: { id, name, pmType: form.pmType, initialBalance: round2(Math.max(0, bal)), t: stamp(), by: DEVICE } } });
     setEditing(null); setForm(blank); setErr("");
   };
   const remove = id => { commit({ paymentMethods: { [id]: { id, deleted: true, t: stamp(), by: DEVICE } } }); setConfirmDel(null); };
@@ -1802,13 +1800,9 @@ function PaymentMethodModal({ state, commit, onClose, money }) {
             /*#__PURE__*/React.createElement("option", { value: "debit_card" }, "Debit Card"),
             /*#__PURE__*/React.createElement("option", { value: "loan" }, "Loan"),
             /*#__PURE__*/React.createElement("option", { value: "cash" }, "Cash")))),
-      (form.pmType === "credit_card" || form.pmType === "loan") && /*#__PURE__*/React.createElement("div", { className: "grid grid-cols-2 gap-2" },
-        /*#__PURE__*/React.createElement("label", { className: "flex flex-col gap-1" },
-          /*#__PURE__*/React.createElement("span", { className: "label" }, form.pmType === "loan" ? "Total loan amount" : "Outstanding balance"),
+      (form.pmType === "credit_card" || form.pmType === "loan") && /*#__PURE__*/React.createElement("label", { className: "flex flex-col gap-1" },
+          /*#__PURE__*/React.createElement("span", { className: "label" }, form.pmType === "loan" ? "Total loan amount" : "Starting balance"),
           /*#__PURE__*/React.createElement("input", { className: "field num", type: "text", inputMode: "decimal", value: form.initialBalance, onChange: e => setForm({...form, initialBalance: e.target.value}), placeholder: "0.00" })),
-        /*#__PURE__*/React.createElement("label", { className: "flex flex-col gap-1" },
-          /*#__PURE__*/React.createElement("span", { className: "label" }, "Statement day"),
-          /*#__PURE__*/React.createElement("input", { className: "field num", type: "number", min: 1, max: 31, value: form.statementDay, onChange: e => setForm({...form, statementDay: e.target.value}), placeholder: "1" }))),
       err && /*#__PURE__*/React.createElement(Notice, { tone: "danger" }, err),
       /*#__PURE__*/React.createElement("div", { className: "flex gap-2" },
         /*#__PURE__*/React.createElement("button", { className: "btn btn-primary flex-1 py-2", onClick: save }, form.id ? "Update" : "Add"),
@@ -1823,23 +1817,19 @@ function PaymentMethodModal({ state, commit, onClose, money }) {
           /*#__PURE__*/React.createElement("button", { className: "btn btn-danger py-1 px-2 text-[13px]", onClick: () => remove(p.id) }, "Delete"),
           /*#__PURE__*/React.createElement("button", { className: "btn py-1 px-2 text-[13px]", onClick: () => setConfirmDel(null) }, "Keep")) :
         /*#__PURE__*/React.createElement("span", { className: "flex" },
-          /*#__PURE__*/React.createElement("button", { className: "icon-btn", "aria-label": `Edit ${p.name}`, onClick: () => { setEditing(p.id); setForm({ ...p, initialBalance: p.initialBalance || "", statementDay: p.statementDay || "1" }); setErr(""); } }, /*#__PURE__*/React.createElement(Pencil, { size: 15 })),
+          /*#__PURE__*/React.createElement("button", { className: "icon-btn", "aria-label": `Edit ${p.name}`, onClick: () => { setEditing(p.id); setForm({ ...p, initialBalance: p.initialBalance || "" }); setErr(""); } }, /*#__PURE__*/React.createElement(Pencil, { size: 15 })),
           /*#__PURE__*/React.createElement("button", { className: "icon-btn", "aria-label": `Delete ${p.name}`, title: txCount(p.id) ? `${txCount(p.id)} entries use this` : "Delete", onClick: () => setConfirmDel(p.id) }, /*#__PURE__*/React.createElement(Trash2, { size: 15 })))
       ))),
     pms.length > 0 && editing === null && /*#__PURE__*/React.createElement("button", { className: "btn mt-2 w-full py-2", onClick: () => setEditing("new") }, /*#__PURE__*/React.createElement(Plus, { size: 16 }), "Add payment method"));
 }
 
 /* ---------- debt tracker ---------- */
-function stmtPeriod(day, offset) {
+function defaultStmtDates() {
   const now = new Date();
-  const y = now.getFullYear(), m = now.getMonth() + offset;
-  const d = Math.min(day, new Date(y, m + 1, 0).getDate());
-  const start = new Date(y, m, d);
-  const dEnd = Math.min(day, new Date(y, m + 2, 0).getDate());
-  const end = new Date(y, m + 1, dEnd - 1);
-  const fmt = dt => dt.toISOString().slice(0, 10);
-  const label = start.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " – " + end.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
-  return { start: fmt(start), end: fmt(end), label };
+  const y = now.getFullYear(), m = now.getMonth();
+  const start = new Date(y, m, 1);
+  const end = new Date(y, m + 1, 0);
+  return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) };
 }
 function DebtTracker({ state, money, categories }) {
   const pms = live(state.paymentMethods || {});
@@ -1848,49 +1838,92 @@ function DebtTracker({ state, money, categories }) {
   const allTx = live(state.transactions);
   const catMap = useMemo(() => Object.fromEntries((categories || []).map(c => [c.id, c])), [categories]);
   const [expanded, setExpanded] = useState(null);
-  const [stmtOffset, setStmtOffset] = useState(0);
-  const rows = debts.map(p => {
-    const payments = allTx.filter(t => t.paymentMethodId === p.id && t.type === "expense");
+  const defaults = useMemo(defaultStmtDates, []);
+  const [stmtStart, setStmtStart] = useState(defaults.start);
+  const [stmtEnd, setStmtEnd] = useState(defaults.end);
+  const calcDebt = useCallback((p, tx) => {
+    const tagged = tx.filter(t => t.paymentMethodId === p.id);
+    if (p.pmType === "credit_card") {
+      const charges = tagged.filter(t => t.type === "expense").reduce((a, t) => a + t.amount, 0);
+      const payments = tagged.filter(t => t.type === "income").reduce((a, t) => a + t.amount, 0);
+      const owed = round2(Math.max(0, p.initialBalance + charges - payments));
+      const allCharges = tagged.filter(t => t.type === "expense");
+      const allPayments = tagged.filter(t => t.type === "income");
+      return { owed, charges, payments, totalCharged: round2(charges), totalPaidBack: round2(payments), allTx: tagged, allCharges, allPayments };
+    }
+    const payments = tagged.filter(t => t.type === "expense");
     const totalPaid = round2(payments.reduce((a, t) => a + t.amount, 0));
-    const remaining = round2(Math.max(0, p.initialBalance - totalPaid));
-    const pct = p.initialBalance > 0 ? Math.min(100, totalPaid / p.initialBalance * 100) : 0;
-    return { ...p, payments, totalPaid, remaining, pct, txCount: payments.length };
+    const owed = round2(Math.max(0, p.initialBalance - totalPaid));
+    return { owed, totalPaid, allTx: tagged, allPayments: payments };
+  }, []);
+  const totalDebt = useMemo(() => {
+    let total = 0;
+    debts.forEach(p => { total += calcDebt(p, allTx).owed; });
+    return round2(total);
+  }, [debts, allTx, calcDebt]);
+  const rows = debts.map(p => {
+    const d = calcDebt(p, allTx);
+    const stmtTx = d.allTx.filter(t => t.date >= stmtStart && t.date <= stmtEnd);
+    const stmtCharges = round2(stmtTx.filter(t => t.type === "expense").reduce((a, t) => a + t.amount, 0));
+    const stmtPaymentsAmt = round2(stmtTx.filter(t => t.type === "income").reduce((a, t) => a + t.amount, 0));
+    const isCC = p.pmType === "credit_card";
+    const pct = isCC
+      ? (d.totalPaidBack && (d.totalPaidBack / (p.initialBalance + d.totalCharged)) * 100 || 0)
+      : (p.initialBalance > 0 ? Math.min(100, d.totalPaid / p.initialBalance * 100) : 0);
+    return { ...p, owed: d.owed, pct: Math.min(100, pct), stmtTx, stmtCharges, stmtPaymentsAmt, isCC,
+      totalCharged: d.totalCharged, totalPaidBack: d.totalPaidBack, totalPaid: d.totalPaid,
+      txCount: d.allTx.length };
   }).sort((a, b) => a.name.localeCompare(b.name));
   const exp = expanded ? rows.find(r => r.id === expanded) : null;
-  const period = exp ? stmtPeriod(exp.statementDay || 1, stmtOffset) : null;
-  const stmtTx = exp ? exp.payments.filter(t => t.date >= period.start && t.date <= period.end).sort((a, b) => a.date < b.date ? 1 : -1) : [];
-  const stmtTotal = round2(stmtTx.reduce((a, t) => a + t.amount, 0));
   return /*#__PURE__*/React.createElement("section", { className: "panel p-4 sm:p-5 flex flex-col gap-3" },
     /*#__PURE__*/React.createElement("h2", { className: "m-0 text-[17px] font-bold flex items-center gap-2" },
       /*#__PURE__*/React.createElement(CircleDollarSign, { size: 18, style: { color: "var(--expense)" } }),
       "Debt Tracker"),
+    /*#__PURE__*/React.createElement("div", { className: "flex items-center gap-2 p-3 rounded-lg", style: { background: "var(--bg2)" } },
+      /*#__PURE__*/React.createElement(Landmark, { size: 20, style: { color: "var(--expense)" } }),
+      /*#__PURE__*/React.createElement("div", { className: "flex-1" },
+        /*#__PURE__*/React.createElement("div", { className: "text-[12px]", style: { color: "var(--muted)" } }, "Total outstanding debt"),
+        /*#__PURE__*/React.createElement("div", { className: "num text-[22px] font-bold", style: { color: totalDebt > 0 ? "var(--expense)" : "var(--income)" } }, totalDebt > 0 ? money(totalDebt) : "All paid off!"))),
+    /*#__PURE__*/React.createElement("div", { className: "flex flex-col sm:flex-row items-start sm:items-center gap-2" },
+      /*#__PURE__*/React.createElement("span", { className: "text-[13px] font-medium shrink-0" }, "Statement period"),
+      /*#__PURE__*/React.createElement("div", { className: "flex items-center gap-1.5 flex-1 min-w-0" },
+        /*#__PURE__*/React.createElement("input", { type: "date", className: "field text-[13px] py-1 flex-1 min-w-0", value: stmtStart, onChange: e => setStmtStart(e.target.value) }),
+        /*#__PURE__*/React.createElement("span", { className: "text-[13px]", style: { color: "var(--muted)" } }, "to"),
+        /*#__PURE__*/React.createElement("input", { type: "date", className: "field text-[13px] py-1 flex-1 min-w-0", value: stmtEnd, onChange: e => setStmtEnd(e.target.value) }))),
     rows.map(r => /*#__PURE__*/React.createElement("div", { key: r.id, className: "flex flex-col gap-1" },
-      /*#__PURE__*/React.createElement("div", { className: "flex items-center justify-between gap-2 cursor-pointer", onClick: () => { setExpanded(expanded === r.id ? null : r.id); setStmtOffset(0); } },
+      /*#__PURE__*/React.createElement("div", { className: "flex items-center justify-between gap-2 cursor-pointer", onClick: () => setExpanded(expanded === r.id ? null : r.id) },
         /*#__PURE__*/React.createElement("div", { className: "flex items-center gap-2 min-w-0" },
           /*#__PURE__*/React.createElement(r.pmType === "loan" ? Landmark : CreditCard, { size: 15, style: { color: "var(--muted)" } }),
           /*#__PURE__*/React.createElement("span", { className: "font-medium truncate" }, r.name),
-          /*#__PURE__*/React.createElement("span", { className: "text-[12px] px-1.5 py-0.5 rounded", style: { background: "var(--bg2)", color: "var(--muted)" } }, r.txCount, " txns"),
+          /*#__PURE__*/React.createElement("span", { className: "text-[12px] px-1.5 py-0.5 rounded", style: { background: "var(--bg2)", color: "var(--muted)" } }, r.stmtTx.length, " txns"),
           /*#__PURE__*/React.createElement(ChevronDown, { size: 14, style: { color: "var(--muted)", transition: "transform .2s", transform: expanded === r.id ? "rotate(180deg)" : "none" } })),
-        /*#__PURE__*/React.createElement("span", { className: "num font-semibold", style: { color: r.remaining > 0 ? "var(--expense)" : "var(--income)" } }, r.remaining > 0 ? `${money(r.remaining)} left` : "Paid off!")),
+        /*#__PURE__*/React.createElement("span", { className: "num font-semibold", style: { color: r.owed > 0 ? "var(--expense)" : "var(--income)" } }, r.owed > 0 ? `${money(r.owed)} owed` : "Paid off!")),
       /*#__PURE__*/React.createElement("div", { className: "h-2 rounded-full overflow-hidden", style: { background: "var(--bg2)" } },
         /*#__PURE__*/React.createElement("div", { className: "h-full rounded-full transition-all", style: { width: `${r.pct}%`, background: r.pct >= 100 ? "var(--income)" : "var(--accent)" } })),
       /*#__PURE__*/React.createElement("div", { className: "flex justify-between text-[12px]", style: { color: "var(--muted)" } },
-        /*#__PURE__*/React.createElement("span", { className: "num" }, money(r.totalPaid), " paid"),
-        /*#__PURE__*/React.createElement("span", { className: "num" }, money(r.initialBalance), " total")),
-      expanded === r.id && exp && /*#__PURE__*/React.createElement("div", { className: "mt-2 flex flex-col gap-2 p-3 rounded-lg", style: { background: "var(--bg2)" } },
-        /*#__PURE__*/React.createElement("div", { className: "flex items-center justify-between gap-2" },
-          /*#__PURE__*/React.createElement("button", { className: "icon-btn", onClick: e => { e.stopPropagation(); setStmtOffset(stmtOffset - 1); } }, /*#__PURE__*/React.createElement(ChevronLeft, { size: 16 })),
-          /*#__PURE__*/React.createElement("span", { className: "text-[13px] font-medium" }, period.label),
-          /*#__PURE__*/React.createElement("button", { className: "icon-btn", onClick: e => { e.stopPropagation(); setStmtOffset(stmtOffset + 1); } }, /*#__PURE__*/React.createElement(ChevronRight, { size: 16 }))),
-        /*#__PURE__*/React.createElement("div", { className: "flex justify-between text-[13px] font-semibold py-1", style: { borderBottom: "1px solid var(--line)" } },
-          /*#__PURE__*/React.createElement("span", null, stmtTx.length, " transaction", stmtTx.length !== 1 ? "s" : ""),
-          /*#__PURE__*/React.createElement("span", { className: "num", style: { color: "var(--expense)" } }, money(stmtTotal), " due")),
-        stmtTx.length === 0 ? /*#__PURE__*/React.createElement("div", { className: "text-[13px] py-2 text-center", style: { color: "var(--muted)" } }, "No transactions this period") :
-        stmtTx.map(t => /*#__PURE__*/React.createElement("div", { key: t.id, className: "flex items-center justify-between gap-2 text-[13px] py-1", style: { borderBottom: "1px solid var(--line)" } },
+        r.isCC
+          ? /*#__PURE__*/React.createElement(React.Fragment, null,
+              /*#__PURE__*/React.createElement("span", { className: "num" }, money(r.totalCharged || 0), " charged"),
+              /*#__PURE__*/React.createElement("span", { className: "num" }, money(r.totalPaidBack || 0), " paid back"))
+          : /*#__PURE__*/React.createElement(React.Fragment, null,
+              /*#__PURE__*/React.createElement("span", { className: "num" }, money(r.totalPaid || 0), " paid of ", money(r.initialBalance)),
+              /*#__PURE__*/React.createElement("span", { className: "num" }, Math.round(r.pct), "% paid off"))),
+      expanded === r.id && exp && /*#__PURE__*/React.createElement("div", { className: "mt-2 flex flex-col gap-1 p-3 rounded-lg", style: { background: "var(--bg2)" } },
+        /*#__PURE__*/React.createElement("div", { className: "flex justify-between text-[13px] font-semibold pb-1 mb-1", style: { borderBottom: "1px solid var(--line)" } },
+          /*#__PURE__*/React.createElement("span", null, exp.stmtTx.length, " transaction", exp.stmtTx.length !== 1 ? "s" : "", " in period"),
+          exp.isCC
+            ? /*#__PURE__*/React.createElement("div", { className: "flex gap-3" },
+                /*#__PURE__*/React.createElement("span", { className: "num", style: { color: "var(--expense)" } }, money(exp.stmtCharges), " charged"),
+                /*#__PURE__*/React.createElement("span", { className: "num", style: { color: "var(--income)" } }, money(exp.stmtPaymentsAmt), " paid"))
+            : /*#__PURE__*/React.createElement("span", { className: "num", style: { color: "var(--expense)" } }, money(exp.stmtCharges), " due")),
+        exp.stmtTx.length === 0 ? /*#__PURE__*/React.createElement("div", { className: "text-[13px] py-2 text-center", style: { color: "var(--muted)" } }, "No transactions in this period") :
+        exp.stmtTx.sort((a, b) => a.date < b.date ? 1 : -1).map(t => /*#__PURE__*/React.createElement("div", { key: t.id, className: "flex items-center justify-between gap-2 text-[13px] py-1.5", style: { borderBottom: "1px solid var(--line)" } },
           /*#__PURE__*/React.createElement("div", { className: "flex-1 min-w-0" },
-            /*#__PURE__*/React.createElement("div", { className: "truncate" }, t.note || catMap[t.categoryId]?.name || "Uncategorized"),
-            /*#__PURE__*/React.createElement("div", { className: "num text-[11px]", style: { color: "var(--muted)" } }, t.date)),
-          /*#__PURE__*/React.createElement("span", { className: "num font-medium shrink-0", style: { color: "var(--expense)" } }, money(t.amount))))))));
+            /*#__PURE__*/React.createElement("div", { className: "truncate font-medium" }, t.note || catMap[t.categoryId]?.name || "Uncategorized"),
+            /*#__PURE__*/React.createElement("div", { className: "num text-[11px]", style: { color: "var(--muted)" } }, new Date(t.date + "T12:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }), catMap[t.categoryId] ? " · " + catMap[t.categoryId].name : "",
+              t.type === "income" ? " · Payment" : "")),
+          /*#__PURE__*/React.createElement("span", { className: "num font-semibold shrink-0", style: { color: t.type === "income" ? "var(--income)" : "var(--expense)" } },
+            t.type === "income" ? `-${money(t.amount)}` : money(t.amount))))))));
 }
 
 /* ---------- add transaction ---------- */
@@ -2577,6 +2610,23 @@ function App() {
   const net = round2(income - expenses);
   const rate = income ? Math.round(net / income * 100) : null;
   const monthName = monthLabel(month).split(" ")[0];
+  const totalDebt = useMemo(() => {
+    const pms = live(data.paymentMethods || {});
+    const debts = pms.filter(p => p.pmType === "credit_card" || p.pmType === "loan");
+    let total = 0;
+    debts.forEach(p => {
+      const tagged = allTx.filter(t => t.paymentMethodId === p.id);
+      if (p.pmType === "credit_card") {
+        const charges = tagged.filter(t => t.type === "expense").reduce((a, t) => a + t.amount, 0);
+        const payments = tagged.filter(t => t.type === "income").reduce((a, t) => a + t.amount, 0);
+        total += Math.max(0, p.initialBalance + charges - payments);
+      } else {
+        const paid = tagged.filter(t => t.type === "expense").reduce((a, t) => a + t.amount, 0);
+        total += Math.max(0, p.initialBalance - paid);
+      }
+    });
+    return { amount: round2(total), count: debts.length };
+  }, [data.paymentMethods, allTx]);
   const addTx = t => {
     commit({
       transactions: {
@@ -2743,7 +2793,7 @@ function App() {
   }, "Clear examples and start my budget"), /*#__PURE__*/React.createElement("span", null, ". They're also removed when you connect to sync.")), saveError && /*#__PURE__*/React.createElement(Notice, {
     tone: "danger"
   }, "This browser is blocking storage (private mode or full storage), so changes won't be kept after you close the page. Export your data to keep a copy."), /*#__PURE__*/React.createElement("section", {
-    className: "grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4",
+    className: "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4",
     "aria-label": "Summary"
   }, /*#__PURE__*/React.createElement(StatCard, {
     label: "Total income",
@@ -2763,6 +2813,12 @@ function App() {
     icon: PiggyBank,
     tone: net < 0 ? "danger" : "accent",
     sub: rate === null ? "Add income to see your savings rate" : net < 0 ? `Spent ${money(-net)} more than you earned` : `${rate}% of income saved`
+  }), totalDebt.count > 0 && /*#__PURE__*/React.createElement(StatCard, {
+    label: "Total debt",
+    value: money(totalDebt.amount),
+    icon: CircleDollarSign,
+    tone: totalDebt.amount > 0 ? "danger" : "income",
+    sub: totalDebt.amount > 0 ? `${totalDebt.count} account${totalDebt.count !== 1 ? "s" : ""} with outstanding balance` : "All debts paid off!"
   })), /*#__PURE__*/React.createElement("div", {
     className: "grid grid-cols-1 lg:grid-cols-[1.35fr_1fr] gap-4 sm:gap-5 items-start"
   }, /*#__PURE__*/React.createElement(BudgetProgress, {
