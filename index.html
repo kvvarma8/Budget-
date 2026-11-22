@@ -1880,7 +1880,7 @@ function BudgetProgress({
   const known = new Set(expenseCats.map(c => c.id));
   const rows = expenseCats.map(c => ({
     ...c,
-    spent: round2(monthTx.filter(t => t.type === "expense" && t.categoryId === c.id).reduce((a, t) => a + t.amount, 0))
+    spent: round2(monthTx.filter(t => t.type === "expense" && t.categoryId === c.id).reduce((a, t) => a + t.amount, 0) - monthTx.filter(t => t.type === "income" && t.categoryId === c.id).reduce((a, t) => a + t.amount, 0))
   }));
   const uncategorized = round2(monthTx.filter(t => t.type === "expense" && !known.has(t.categoryId)).reduce((a, t) => a + t.amount, 0));
   const totalBudget = rows.reduce((a, r) => a + r.budget, 0);
@@ -1954,7 +1954,7 @@ function BudgetProgress({
   }))), /*#__PURE__*/React.createElement("div", {
     className: "flex flex-col gap-4"
   }, rows.map(r => {
-    const p = r.budget ? Math.min(100, r.spent / r.budget * 100) : 0;
+    const p = r.budget ? Math.min(100, Math.max(0, r.spent) / r.budget * 100) : 0;
     const over = r.budget && r.spent > r.budget;
     return /*#__PURE__*/React.createElement("div", {
       key: r.id,
